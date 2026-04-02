@@ -4,6 +4,10 @@ from flask_jwt_extended import create_access_token, JWTManager
 import MySQLdb
 import random
 import json
+import os
+import faiss
+import pickle
+import numpy as np
 
 app = Flask(__name__)
 CORS(app, origins=["http://localhost:3000"], supports_credentials=True)
@@ -1831,6 +1835,113 @@ def get_teacher_heatmap():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
+@app.route('/api/student/<int:student_id>/recommendations', methods=['GET'])
+def get_student_recommendations(student_id):
+    """Personalized quiz recommendations based on skill gaps.
+    Returns quizzes for weak topics that the student hasn't taken yet."""
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+
+        # Get topics where student has gaps (avg score < 70%), ordered by weakness
+        cursor.execute("""
+            SELECT t.topic_id, t.topic_name, AVG(qa.score * 100.0 / q.total_marks) as avg_pct
+            FROM quiz_attempt qa
+            JOIN quizzes q ON qa.quiz_id = q.quiz_id
+            JOIN topics t ON q.topic_id = t.topic_id
+            WHERE qa.student_id = %s
+            GROUP BY t.topic_id, t.topic_name
+            HAVING avg_pct < 70
+            ORDER BY avg_pct ASC
+        """, (student_id,))
+        gap_topics = cursor.fetchall()
+
+        recommendations = []
+        for topic in gap_topics:
+            topic_id = topic[0]
+            topic_name = topic[1]
+            avg_score = round(topic[2], 1)
+
+            if avg_score < 40:
+                reason = f"You need to improve {topic_name}"
+            else:
+                reason = f"Practice more {topic_name} to reach mastery"
+
+            # Find quizzes for this topic the student hasn't taken
+            cursor.execute("""
+                SELECT q.quiz_id, q.title, q.total_marks
+                FROM quizzes q
+                WHERE q.topic_id = %s
+                AND q.quiz_id NOT IN (
+                    SELECT qa.quiz_id
+                    FROM quiz_attempt qa
+                    WHERE qa.student_id = %s
+                )
+                LIMIT 2
+            """, (topic_id, student_id))
+            for quiz in cursor.fetchall():
+                recommendations.append({
+                    'quiz_id': quiz[0],
+                    'title': quiz[1],
+                    'topic_name': topic_name,
+                    'total_marks': quiz[2],
+                    'avg_score': avg_score,
+                    'reason': reason
+                })
+
+            if len(recommendations) >= 5:
+                break
+
+        # If fewer than 5 gap-based recommendations, add quizzes for unstarted topics
+        if len(recommendations) < 5:
+            cursor.execute("""
+                SELECT t.topic_id, t.topic_name
+                FROM topics t
+                WHERE t.topic_id NOT IN (
+                    SELECT DISTINCT q.topic_id
+                    FROM quiz_attempt qa
+                    JOIN quizzes q ON qa.quiz_id = q.quiz_id
+                    WHERE qa.student_id = %s
+                )
+                ORDER BY t.grade_level, t.topic_id
+            """, (student_id,))
+            unstarted_topics = cursor.fetchall()
+
+            for topic in unstarted_topics:
+                if len(recommendations) >= 5:
+                    break
+                topic_id = topic[0]
+                topic_name = topic[1]
+
+                # Check if prerequisites are met
+                prereqs_met = check_prerequisites_met(cursor, student_id, topic_id)
+                if not prereqs_met:
+                    continue
+
+                cursor.execute("""
+                    SELECT q.quiz_id, q.title, q.total_marks
+                    FROM quizzes q
+                    WHERE q.topic_id = %s
+                    LIMIT 2
+                """, (topic_id,))
+                for quiz in cursor.fetchall():
+                    if len(recommendations) >= 5:
+                        break
+                    recommendations.append({
+                        'quiz_id': quiz[0],
+                        'title': quiz[1],
+                        'topic_name': topic_name,
+                        'total_marks': quiz[2],
+                        'avg_score': None,
+                        'reason': f"Try {topic_name} - a new topic for you"
+                    })
+
+        cursor.close()
+        conn.close()
+        return jsonify({"recommendations": recommendations[:5]})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
 @app.route('/api/student/materials', methods=['GET'])
 def get_student_materials():
     """Get approved materials, optionally filtered by student_id."""
@@ -1883,6 +1994,109 @@ def get_student_materials():
         cursor.close()
         conn.close()
         return jsonify({"materials": materials_list})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/api/curriculum/search', methods=['GET', 'POST'])
+def search_curriculum():
+    """Search curriculum using FAISS index and return full text results."""
+    try:
+        if request.method == 'POST':
+            data = request.get_json() or {}
+            query = data.get('query', '').strip()
+        else:
+            query = request.args.get('q', '').strip()
+
+        if not query:
+            return jsonify({"error": "Search query required"}), 400
+
+        index_path = os.path.join('faiss_index', 'index.faiss')
+        vectorizer_path = os.path.join('faiss_index', 'vectorizer.pkl')
+        metadata_path = os.path.join('faiss_index', 'metadata.json')
+
+        try:
+            index = faiss.read_index(index_path)
+            with open(vectorizer_path, 'rb') as f:
+                vectorizer = pickle.load(f)
+        except Exception:
+            return jsonify({"error": "FAISS index or vectorizer could not be loaded"}), 500
+
+        if not os.path.exists(metadata_path):
+            return jsonify({"error": "Metadata file not found at faiss_index/metadata.json"}), 404
+
+        with open(metadata_path, 'r', encoding='utf-8') as f:
+            metadata = json.load(f)
+
+        query_vector = vectorizer.transform([query]).toarray().astype('float32')
+        distances, indices = index.search(query_vector, 5)
+
+        results = []
+        for i, dist in zip(indices[0], distances[0]):
+            if i < 0 or i >= len(metadata):
+                continue
+            chunk = metadata[i]
+            similarity = max(0, (1 - float(dist)) * 100)
+            results.append({
+                'text': chunk['text'][:500],
+                'source': chunk['source'],
+                'page': chunk['page'],
+                'similarity': int(similarity)
+            })
+
+        return jsonify({"results": results})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/api/faiss/test', methods=['GET'])
+def faiss_test():
+    """Test endpoint that loads FAISS index and vectorizer."""
+    try:
+        index_path = os.path.join('faiss_index', 'index.faiss')
+        vectorizer_path = os.path.join('faiss_index', 'vectorizer.pkl')
+
+        if not os.path.exists(index_path):
+            return jsonify({"error": "FAISS index file not found at faiss_index/index.faiss"}), 404
+        if not os.path.exists(vectorizer_path):
+            return jsonify({"error": "Vectorizer file not found at faiss_index/vectorizer.pkl"}), 404
+
+        index = faiss.read_index(index_path)
+        with open(vectorizer_path, 'rb') as f:
+            vectorizer = pickle.load(f)
+
+        return jsonify({
+            "status": "FAISS loaded successfully",
+            "index_size": index.ntotal
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/api/curriculum/search/faiss', methods=['POST'])
+def search_curriculum_faiss():
+    """Search curriculum using FAISS index. Returns chunk indexes and distances."""
+    try:
+        data = request.get_json()
+        query = data.get('query', '').strip() if data else ''
+
+        if not query:
+            return jsonify({"error": "Query 'query' is required"}), 400
+
+        index_path = os.path.join('faiss_index', 'index.faiss')
+        vectorizer_path = os.path.join('faiss_index', 'vectorizer.pkl')
+
+        try:
+            index = faiss.read_index(index_path)
+            with open(vectorizer_path, 'rb') as f:
+                vectorizer = pickle.load(f)
+        except Exception:
+            return jsonify({"error": "FAISS index or vectorizer could not be loaded"}), 500
+
+        query_vector = vectorizer.transform([query]).toarray().astype('float32')
+        distances, indices = index.search(query_vector, 5)
+
+        return jsonify({
+            "indexes": [int(i) for i in indices[0]],
+            "distances": [float(d) for d in distances[0]]
+        })
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
