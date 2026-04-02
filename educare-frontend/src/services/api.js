@@ -85,6 +85,11 @@ export const getStudentRecommendations = async (studentId) => {
   return response.data;
 };
 
+export const getCompletedQuizzes = async (studentId) => {
+  const response = await api.get(`/api/student/${studentId}/completed-quizzes`);
+  return response.data;
+};
+
 // Family APIs
 export const getFamilyStudents = async () => {
   const response = await api.get('/api/family/students');
