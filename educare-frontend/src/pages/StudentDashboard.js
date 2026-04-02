@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { getQuizzes, getApprovedMaterials, getProgressMap, getAvailableTopics } from '../services/api';
+import { getQuizzes, getApprovedMaterials, getProgressMap, getAvailableTopics, getStudentRecommendations } from '../services/api';
 
 function StudentDashboard() {
   const [quizzes, setQuizzes] = useState([]);
@@ -8,6 +8,7 @@ function StudentDashboard() {
   const [progressMap, setProgressMap] = useState({});
   const [grades, setGrades] = useState([]);
   const [availableTopics, setAvailableTopics] = useState([]);
+  const [recommendations, setRecommendations] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [activeTab, setActiveTab] = useState('progress');
@@ -18,17 +19,19 @@ function StudentDashboard() {
   useEffect(() => {
     const fetchData = async () => {
       try {
-        const [quizzesData, materialsData, progressData, topicsData] = await Promise.all([
+        const [quizzesData, materialsData, progressData, topicsData, recsData] = await Promise.all([
           getQuizzes(),
           getApprovedMaterials(userId),
           getProgressMap(userId),
-          getAvailableTopics(userId)
+          getAvailableTopics(userId),
+          getStudentRecommendations(userId)
         ]);
         setQuizzes(quizzesData.quizzes || []);
         setMaterials(materialsData.materials || []);
         setProgressMap(progressData.progress_map || {});
         setGrades(progressData.grades || []);
         setAvailableTopics(topicsData.topics || []);
+        setRecommendations(recsData.recommendations || []);
       } catch (err) {
         setError('Failed to load data');
       } finally {
@@ -232,6 +235,52 @@ function StudentDashboard() {
         {/* Quizzes Tab */}
         {activeTab === 'quizzes' && (
           <div>
+            {/* Recommended for You */}
+            <div className="mb-8">
+              <h2 className="text-2xl font-bold mb-1">Recommended for You</h2>
+              <p className="text-gray-600 mb-4">Quizzes picked based on your performance to help you improve.</p>
+              {recommendations.length > 0 ? (
+                <div className="flex gap-4 overflow-x-auto pb-2 -mx-1 px-1">
+                  {recommendations.map((rec) => (
+                    <div
+                      key={rec.quiz_id}
+                      className="flex-shrink-0 w-72 bg-white rounded-lg shadow-md border border-blue-100 p-5 hover:shadow-lg transition"
+                    >
+                      <div className="flex items-center gap-2 mb-2">
+                        <span className="text-xs px-2 py-0.5 rounded-full bg-blue-100 text-blue-700 font-medium">
+                          {rec.topic_name}
+                        </span>
+                        {rec.avg_score !== null && (
+                          <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${
+                            rec.avg_score < 40 ? 'bg-red-100 text-red-700' : 'bg-yellow-100 text-yellow-700'
+                          }`}>
+                            {rec.avg_score}%
+                          </span>
+                        )}
+                      </div>
+                      <h3 className="font-semibold text-gray-800 mb-1">{rec.title}</h3>
+                      <p className="text-sm text-gray-500 mb-3">{rec.reason}</p>
+                      <div className="flex items-center justify-between">
+                        <span className="text-xs text-gray-400">{rec.total_marks} marks</span>
+                        <button
+                          onClick={() => navigate(`/quiz/${rec.quiz_id}`)}
+                          className="bg-blue-600 text-white px-4 py-1.5 rounded text-sm hover:bg-blue-700 transition"
+                        >
+                          Take Quiz
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <div className="bg-white rounded-lg shadow-md p-8 text-center">
+                  <div className="text-3xl mb-2"></div>
+                  <p className="text-lg font-medium text-gray-700">Great job! No recommendations needed</p>
+                  <p className="text-sm text-gray-500 mt-1">You're performing well across all topics.</p>
+                </div>
+              )}
+            </div>
+
             <h2 className="text-2xl font-bold mb-6">Available Quizzes</h2>
 
             {/* Available (unlocked) topics with quizzes */}
