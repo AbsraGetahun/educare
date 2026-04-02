@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
-import { getFamilyStudentProgress, getFamilyStudentGaps, getFamilyStudentRecommendations } from '../services/api';
+import { LineChart, Line, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, ReferenceLine } from 'recharts';
+import { getFamilyStudentProgress, getFamilyStudentGaps, getFamilyStudentRecommendations, getStudentReport } from '../services/api';
 
 function FamilyDashboard() {
   const [students, setStudents] = useState([]);
@@ -11,6 +11,8 @@ function FamilyDashboard() {
   const [recommendations, setRecommendations] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
+  const [chartType, setChartType] = useState('line');
+  const [downloadingReport, setDownloadingReport] = useState(false);
   const navigate = useNavigate();
   const fullName = localStorage.getItem('full_name');
 
@@ -64,6 +66,27 @@ function FamilyDashboard() {
     setSelectedStudent(student);
   };
 
+  const handleDownloadReport = async () => {
+    if (!selectedStudent) return;
+    setDownloadingReport(true);
+    try {
+      const blob = await getStudentReport(selectedStudent.student_id);
+      const url = window.URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `${selectedStudent.full_name}_Report.pdf`;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      window.URL.revokeObjectURL(url);
+    } catch (err) {
+      setError('Failed to download report');
+      console.error(err);
+    } finally {
+      setDownloadingReport(false);
+    }
+  };
+
   const getWeaknessColor = (level) => {
     if (level === 'High') return 'bg-red-100 text-red-800';
     if (level === 'Moderate') return 'bg-yellow-100 text-yellow-800';
@@ -76,14 +99,46 @@ function FamilyDashboard() {
     return 'bg-green-500';
   };
 
-  // Prepare chart data
-  const chartData = progress.map((attempt, index) => ({
-    name: `Quiz ${index + 1}`,
-    score: attempt.score,
-    total: attempt.total_marks,
-    percentage: Math.round((attempt.score / attempt.total_marks) * 100),
-    date: new Date(attempt.completed_at).toLocaleDateString()
-  }));
+  // Prepare chart data sorted by date
+  const sortedProgress = [...progress].sort((a, b) => new Date(a.completed_at) - new Date(b.completed_at));
+  const chartData = sortedProgress.map((attempt, index) => {
+    const pct = Math.round((attempt.score / attempt.total_marks) * 100);
+    const date = new Date(attempt.completed_at);
+    return {
+      name: attempt.quiz_title || `Quiz ${index + 1}`,
+      score: attempt.score,
+      total: attempt.total_marks,
+      percentage: pct,
+      date: date.toLocaleDateString(),
+      shortDate: `${date.getMonth() + 1}/${date.getDate()}`,
+      topic: attempt.topic || ''
+    };
+  });
+  const avgScore = chartData.length > 0
+    ? Math.round(chartData.reduce((sum, d) => sum + d.percentage, 0) / chartData.length)
+    : 0;
+
+  const CustomTooltip = ({ active, payload }) => {
+    if (active && payload && payload.length) {
+      const data = payload[0].payload;
+      return (
+        <div className="bg-white border border-gray-200 rounded-lg shadow-lg p-3">
+          <p className="font-semibold text-gray-800">{data.name}</p>
+          <p className="text-sm text-gray-500">{data.topic}</p>
+          <p className="text-sm text-gray-500">{data.date}</p>
+          <div className="mt-1 pt-1 border-t">
+            <p className="text-sm">
+              Score: <span className="font-bold">{data.score}/{data.total}</span>
+              <span className={`ml-2 font-bold ${data.percentage >= 70 ? 'text-green-600' : data.percentage >= 40 ? 'text-yellow-600' : 'text-red-600'}`}>
+                ({data.percentage}%)
+              </span>
+            </p>
+          </div>
+        </div>
+      );
+    }
+    return null;
+  };
 
   if (loading && !selectedStudent) {
     return (
@@ -149,7 +204,19 @@ function FamilyDashboard() {
           <>
             {/* Student Info Card */}
             <div className="bg-white rounded-lg shadow-md p-6 mb-6">
-              <h2 className="text-2xl font-bold mb-4">Student Information</h2>
+              <div className="flex flex-wrap justify-between items-start mb-4 gap-4">
+                <h2 className="text-2xl font-bold">Student Information</h2>
+                <button
+                  onClick={handleDownloadReport}
+                  disabled={downloadingReport}
+                  className="bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 transition flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                  </svg>
+                  {downloadingReport ? 'Downloading...' : 'Download Report'}
+                </button>
+              </div>
               <div className="grid md:grid-cols-3 gap-4">
                 <div>
                   <div className="text-sm text-gray-500">Name</div>
@@ -166,40 +233,113 @@ function FamilyDashboard() {
               </div>
             </div>
 
-            {/* Progress Chart */}
+            {/* Performance Trend */}
             <div className="bg-white rounded-lg shadow-md p-6 mb-6">
-              <h2 className="text-2xl font-bold mb-4">Progress Over Time</h2>
+              <div className="flex flex-wrap justify-between items-center mb-4 gap-2">
+                <div>
+                  <h2 className="text-2xl font-bold">Performance Trend</h2>
+                  {chartData.length > 0 && (
+                    <p className="text-sm text-gray-500 mt-1">
+                      {chartData.length} quiz{chartData.length !== 1 ? 'es' : ''} taken
+                      {avgScore > 0 && <span> - Average: <span className={`font-semibold ${avgScore >= 70 ? 'text-green-600' : avgScore >= 40 ? 'text-yellow-600' : 'text-red-600'}`}>{avgScore}%</span></span>}
+                    </p>
+                  )}
+                </div>
+                <div className="flex bg-gray-100 rounded-lg p-1">
+                  <button
+                    onClick={() => setChartType('line')}
+                    className={`px-4 py-1.5 rounded-md text-sm font-medium transition ${
+                      chartType === 'line'
+                        ? 'bg-white shadow text-blue-600'
+                        : 'text-gray-500 hover:text-gray-700'
+                    }`}
+                  >
+                    Line
+                  </button>
+                  <button
+                    onClick={() => setChartType('bar')}
+                    className={`px-4 py-1.5 rounded-md text-sm font-medium transition ${
+                      chartType === 'bar'
+                        ? 'bg-white shadow text-blue-600'
+                        : 'text-gray-500 hover:text-gray-700'
+                    }`}
+                  >
+                    Bar
+                  </button>
+                </div>
+              </div>
               {chartData.length > 0 ? (
                 <div className="h-80">
                   <ResponsiveContainer width="100%" height="100%">
-                    <LineChart data={chartData}>
-                      <CartesianGrid strokeDasharray="3 3" />
-                      <XAxis dataKey="name" />
-                      <YAxis domain={[0, 100]} />
-                      <Tooltip 
-                        formatter={(value, name) => {
-                          if (name === 'percentage') return [`${value}%`, 'Score'];
-                          return [value, name];
-                        }}
-                        labelFormatter={(label) => {
-                          const item = chartData.find(d => d.name === label);
-                          return item ? item.date : label;
-                        }}
-                      />
-                      <Legend />
-                      <Line 
-                        type="monotone" 
-                        dataKey="percentage" 
-                        stroke="#3B82F6" 
-                        strokeWidth={2}
-                        name="Score %"
-                        dot={{ fill: '#3B82F6', strokeWidth: 2 }}
-                      />
-                    </LineChart>
+                    {chartType === 'line' ? (
+                      <LineChart data={chartData}>
+                        <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
+                        <XAxis
+                          dataKey="shortDate"
+                          tick={{ fontSize: 12 }}
+                          tickLine={false}
+                        />
+                        <YAxis
+                          domain={[0, 100]}
+                          tick={{ fontSize: 12 }}
+                          tickLine={false}
+                          tickFormatter={(v) => `${v}%`}
+                        />
+                        <Tooltip content={<CustomTooltip />} />
+                        <Legend />
+                        <ReferenceLine
+                          y={avgScore}
+                          stroke="#9ca3af"
+                          strokeDasharray="5 5"
+                          label={{ value: `Avg ${avgScore}%`, position: 'right', fill: '#6b7280', fontSize: 12 }}
+                        />
+                        <ReferenceLine y={70} stroke="#10b981" strokeDasharray="3 3" strokeOpacity={0.4} />
+                        <Line
+                          type="monotone"
+                          dataKey="percentage"
+                          stroke="#3B82F6"
+                          strokeWidth={2}
+                          name="Score %"
+                          dot={{ fill: '#3B82F6', strokeWidth: 2, r: 4 }}
+                          activeDot={{ r: 6, fill: '#2563eb' }}
+                        />
+                      </LineChart>
+                    ) : (
+                      <BarChart data={chartData}>
+                        <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
+                        <XAxis
+                          dataKey="shortDate"
+                          tick={{ fontSize: 12 }}
+                          tickLine={false}
+                        />
+                        <YAxis
+                          domain={[0, 100]}
+                          tick={{ fontSize: 12 }}
+                          tickLine={false}
+                          tickFormatter={(v) => `${v}%`}
+                        />
+                        <Tooltip content={<CustomTooltip />} />
+                        <Legend />
+                        <ReferenceLine
+                          y={avgScore}
+                          stroke="#9ca3af"
+                          strokeDasharray="5 5"
+                          label={{ value: `Avg ${avgScore}%`, position: 'right', fill: '#6b7280', fontSize: 12 }}
+                        />
+                        <ReferenceLine y={70} stroke="#10b981" strokeDasharray="3 3" strokeOpacity={0.4} />
+                        <Bar
+                          dataKey="percentage"
+                          name="Score %"
+                          fill="#3B82F6"
+                          radius={[4, 4, 0, 0]}
+                        />
+                      </BarChart>
+                    )}
                   </ResponsiveContainer>
                 </div>
               ) : (
                 <div className="text-gray-500 text-center py-12">
+                  <div className="text-4xl mb-2">--</div>
                   No quiz attempts yet
                 </div>
               )}
