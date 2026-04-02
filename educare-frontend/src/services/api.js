@@ -81,7 +81,7 @@ export const getStudentGaps = async (studentId) => {
 };
 
 export const getStudentRecommendations = async (studentId) => {
-  const response = await api.get(`/api/students/${studentId}/recommendations`);
+  const response = await api.get(`/api/student/${studentId}/recommendations`);
   return response.data;
 };
 
@@ -103,6 +103,13 @@ export const getFamilyStudentGaps = async (studentId) => {
 
 export const getFamilyStudentRecommendations = async (studentId) => {
   const response = await api.get(`/api/family/students/${studentId}/recommendations`);
+  return response.data;
+};
+
+export const getStudentReport = async (studentId) => {
+  const response = await api.get(`/api/family/students/${studentId}/report`, {
+    responseType: 'blob'
+  });
   return response.data;
 };
 
@@ -181,6 +188,12 @@ export const adminUpdateUser = async (userId, userData) => {
 
 export const adminDeleteUser = async (userId) => {
   const response = await api.delete(`/api/admin/user/${userId}`);
+  return response.data;
+};
+
+// Curriculum Search API
+export const searchCurriculum = async (query) => {
+  const response = await api.get('/api/curriculum/search', { params: { q: query } });
   return response.data;
 };
 

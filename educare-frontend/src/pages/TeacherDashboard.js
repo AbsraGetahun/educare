@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { getQuizzes, getStudents, getStudentGaps, getQuizResults, createQuiz, getPendingMaterials, approveMaterial, rejectMaterial, getTeacherMasteryOverview, getHeatmap } from '../services/api';
+import { getQuizzes, getStudents, getStudentGaps, getQuizResults, createQuiz, getPendingMaterials, approveMaterial, rejectMaterial, getTeacherMasteryOverview, getHeatmap, searchCurriculum } from '../services/api';
 
 function TeacherDashboard() {
   const [activeTab, setActiveTab] = useState('overview');
@@ -22,6 +22,13 @@ function TeacherDashboard() {
   const [heatmapGradeFilter, setHeatmapGradeFilter] = useState('all');
   const [heatmapSort, setHeatmapSort] = useState('mastery');
   const [selectedHeatmapTopic, setSelectedHeatmapTopic] = useState(null);
+  const [curriculumQuery, setCurriculumQuery] = useState('');
+  const [curriculumResults, setCurriculumResults] = useState([]);
+  const [curriculumLoading, setCurriculumLoading] = useState(false);
+  const [curriculumSearched, setCurriculumSearched] = useState(false);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [searchResults, setSearchResults] = useState([]);
+  const [isLoading, setIsLoading] = useState(false);
   const [newQuiz, setNewQuiz] = useState({
     title: '',
     topic_id: '',
@@ -133,6 +140,34 @@ function TeacherDashboard() {
     navigate('/login');
   };
 
+  const handleCurriculumSearch = async (e) => {
+    e.preventDefault();
+    if (!curriculumQuery.trim()) return;
+    setCurriculumLoading(true);
+    setCurriculumSearched(true);
+    try {
+      const data = await searchCurriculum(curriculumQuery);
+      setCurriculumResults(data.results || []);
+    } catch (err) {
+      setCurriculumResults([]);
+    } finally {
+      setCurriculumLoading(false);
+    }
+  };
+
+  const handleSearch = async () => {
+    if (!searchQuery.trim()) return;
+    setIsLoading(true);
+    try {
+      const data = await searchCurriculum(searchQuery);
+      setSearchResults(data.results || []);
+    } catch (err) {
+      setSearchResults([]);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
   const getWeaknessColor = (level) => {
     if (level === 'High') return 'bg-red-100 text-red-800';
     if (level === 'Moderate') return 'bg-yellow-100 text-yellow-800';
@@ -200,6 +235,16 @@ function TeacherDashboard() {
               }`}
             >
               Mastery Tracker
+            </button>
+            <button
+              onClick={() => setActiveTab('curriculum')}
+              className={`py-4 px-2 font-medium transition ${
+                activeTab === 'curriculum'
+                  ? 'text-blue-600 border-b-2 border-blue-600'
+                  : 'text-gray-500 hover:text-gray-700'
+              }`}
+            >
+              Curriculum Search
             </button>
             <button
               onClick={() => setActiveTab('heatmap')}
@@ -554,6 +599,62 @@ function TeacherDashboard() {
                 </div>
               );
             })()}
+          </div>
+        )}
+
+        {/* Curriculum Search Tab */}
+        {activeTab === 'curriculum' && (
+          <div>
+            <h2 className="text-2xl font-bold mb-6">Curriculum Search</h2>
+            <div className="flex gap-2 mb-6">
+              <input
+                type="text"
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                onKeyDown={(e) => e.key === 'Enter' && handleSearch()}
+                placeholder="Search curriculum..."
+                className="flex-1 px-4 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+              />
+              <button
+                onClick={handleSearch}
+                className="bg-blue-600 text-white px-6 py-2 rounded-lg hover:bg-blue-700 transition"
+              >
+                Search
+              </button>
+            </div>
+
+            {isLoading && (
+              <div className="text-center py-8">
+                <div className="text-gray-500 text-lg">Searching...</div>
+              </div>
+            )}
+
+            {!isLoading && searchResults.length > 0 && (
+              <div className="space-y-4">
+                {searchResults.map((result, idx) => (
+                  <div key={idx} className="bg-white rounded-lg shadow-md p-6">
+                    <p className="text-gray-700 mb-3">
+                      {result.text ? result.text.substring(0, 300) : 'No preview available'}
+                      {result.text && result.text.length > 300 ? '...' : ''}
+                    </p>
+                    <div className="flex gap-4 text-sm text-gray-500">
+                      {result.source_pdf && (
+                        <span>Source: {result.source_pdf}</span>
+                      )}
+                      {result.page_number && (
+                        <span>Page: {result.page_number}</span>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {!isLoading && searchResults.length === 0 && searchQuery && (
+              <div className="bg-white rounded-lg shadow-md p-12 text-center">
+                <p className="text-gray-500 text-lg">No results found</p>
+              </div>
+            )}
           </div>
         )}
 
