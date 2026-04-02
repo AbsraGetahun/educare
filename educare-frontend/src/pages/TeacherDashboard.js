@@ -45,17 +45,19 @@ function TeacherDashboard() {
   const fetchData = async () => {
     setLoading(true);
     try {
-      const [quizzesData, studentsData, materialsData, masteryData] = await Promise.all([
+      const [quizzesData, studentsData, materialsData, masteryData, heatmapResult] = await Promise.all([
         getQuizzes(),
         getStudents(),
         getPendingMaterials(),
-        getTeacherMasteryOverview()
+        getTeacherMasteryOverview(),
+        getHeatmap()
       ]);
       setQuizzes(quizzesData.quizzes || []);
       setStudents(studentsData.students || []);
       setPendingMaterials(materialsData.materials || []);
       setMasteryOverview(masteryData.overview || []);
       setTotalStudents(masteryData.total_students || 0);
+      setHeatmapData(heatmapResult.heatmap || []);
     } catch (err) {
       setError('Failed to load data');
     } finally {
@@ -198,6 +200,16 @@ function TeacherDashboard() {
               }`}
             >
               Mastery Tracker
+            </button>
+            <button
+              onClick={() => setActiveTab('heatmap')}
+              className={`py-4 px-2 font-medium transition ${
+                activeTab === 'heatmap'
+                  ? 'text-blue-600 border-b-2 border-blue-600'
+                  : 'text-gray-500 hover:text-gray-700'
+              }`}
+            >
+              Gap Heatmap
             </button>
             <button
               onClick={() => setActiveTab('students')}
@@ -417,6 +429,131 @@ function TeacherDashboard() {
                 </div>
               )}
             </div>
+          </div>
+        )}
+
+        {/* Gap Heatmap Tab */}
+        {activeTab === 'heatmap' && (
+          <div>
+            <h2 className="text-2xl font-bold mb-2">Class-wide Gap Heatmap</h2>
+            <p className="text-gray-600 mb-6">Visual overview of class performance across all topics. Click a topic to view struggling students.</p>
+
+            {/* Filters and Sort */}
+            <div className="flex flex-wrap gap-4 mb-6">
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Filter by Grade</label>
+                <select
+                  value={heatmapGradeFilter}
+                  onChange={(e) => setHeatmapGradeFilter(e.target.value)}
+                  className="border rounded px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                >
+                  <option value="all">All Grades</option>
+                  {[...new Set(heatmapData.map(t => t.grade_level))].sort().map(g => (
+                    <option key={g} value={g}>Grade {g}</option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Sort by</label>
+                <select
+                  value={heatmapSort}
+                  onChange={(e) => setHeatmapSort(e.target.value)}
+                  className="border rounded px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                >
+                  <option value="mastery">Mastery % (Low to High)</option>
+                  <option value="mastery_desc">Mastery % (High to Low)</option>
+                  <option value="name">Topic Name (A-Z)</option>
+                  <option value="grade">Grade Level</option>
+                </select>
+              </div>
+            </div>
+
+            {/* Legend */}
+            <div className="flex gap-6 mb-6 flex-wrap">
+              <div className="flex items-center gap-2">
+                <div className="w-4 h-4 rounded" style={{ backgroundColor: '#10b981' }}></div>
+                <span className="text-sm text-gray-600">Good (70%+)</span>
+              </div>
+              <div className="flex items-center gap-2">
+                <div className="w-4 h-4 rounded" style={{ backgroundColor: '#f59e0b' }}></div>
+                <span className="text-sm text-gray-600">Needs Attention (40-69%)</span>
+              </div>
+              <div className="flex items-center gap-2">
+                <div className="w-4 h-4 rounded" style={{ backgroundColor: '#ef4444' }}></div>
+                <span className="text-sm text-gray-600">Critical (below 40%)</span>
+              </div>
+            </div>
+
+            {/* Heatmap Grid */}
+            {(() => {
+              let filtered = [...heatmapData];
+              if (heatmapGradeFilter !== 'all') {
+                filtered = filtered.filter(t => t.grade_level === parseInt(heatmapGradeFilter));
+              }
+              if (heatmapSort === 'mastery') {
+                filtered.sort((a, b) => a.mastery_percentage - b.mastery_percentage);
+              } else if (heatmapSort === 'mastery_desc') {
+                filtered.sort((a, b) => b.mastery_percentage - a.mastery_percentage);
+              } else if (heatmapSort === 'name') {
+                filtered.sort((a, b) => a.topic_name.localeCompare(b.topic_name));
+              } else if (heatmapSort === 'grade') {
+                filtered.sort((a, b) => a.grade_level - b.grade_level || a.topic_name.localeCompare(b.topic_name));
+              }
+
+              if (filtered.length === 0) {
+                return (
+                  <div className="bg-white rounded-lg shadow-md p-12 text-center">
+                    <p className="text-gray-500 text-lg">No topics match the selected filter</p>
+                  </div>
+                );
+              }
+
+              return (
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
+                  {filtered.map((topic) => {
+                    const statusColor = topic.status === 'good' ? '#10b981' : topic.status === 'needs_attention' ? '#f59e0b' : '#ef4444';
+                    const statusLabel = topic.status === 'good' ? 'Good' : topic.status === 'needs_attention' ? 'Needs Attention' : 'Critical';
+                    const statusBg = topic.status === 'good' ? 'bg-green-100 text-green-800' : topic.status === 'needs_attention' ? 'bg-yellow-100 text-yellow-800' : 'bg-red-100 text-red-800';
+                    return (
+                      <button
+                        key={topic.topic_id}
+                        onClick={() => setSelectedHeatmapTopic(topic)}
+                        className="bg-white rounded-lg shadow-md p-5 text-left hover:shadow-lg transition border-t-4"
+                        style={{ borderTopColor: statusColor }}
+                        title={`${topic.mastered_count} mastered, ${topic.struggling_count} struggling, ${topic.untouched_count} not started`}
+                      >
+                        <div className="flex justify-between items-start mb-3">
+                          <div>
+                            <h3 className="font-semibold text-gray-800">{topic.topic_name}</h3>
+                            <p className="text-xs text-gray-500">Grade {topic.grade_level}</p>
+                          </div>
+                          <span className={`text-xs px-2 py-1 rounded-full font-medium ${statusBg}`}>
+                            {statusLabel}
+                          </span>
+                        </div>
+                        <div className="mb-3">
+                          <span className="text-3xl font-bold" style={{ color: statusColor }}>
+                            {topic.mastery_percentage}%
+                          </span>
+                          <span className="text-sm text-gray-500 ml-1">mastery</span>
+                        </div>
+                        <div className="w-full bg-gray-200 rounded-full h-2 mb-3">
+                          <div
+                            className="h-2 rounded-full transition-all"
+                            style={{ width: `${topic.mastery_percentage}%`, backgroundColor: statusColor }}
+                          ></div>
+                        </div>
+                        <div className="flex justify-between text-xs text-gray-500">
+                          <span title="Mastered">{topic.mastered_count} mastered</span>
+                          <span title="Struggling">{topic.struggling_count} struggling</span>
+                          <span title="Not started">{topic.untouched_count} not started</span>
+                        </div>
+                      </button>
+                    );
+                  })}
+                </div>
+              );
+            })()}
           </div>
         )}
 
@@ -724,6 +861,93 @@ function TeacherDashboard() {
                 className="px-4 py-2 bg-red-600 text-white rounded hover:bg-red-700"
               >
                 Reject
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Struggling Students Modal */}
+      {selectedHeatmapTopic && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+          <div className="bg-white rounded-lg shadow-xl w-full max-w-lg max-h-[80vh] overflow-hidden flex flex-col">
+            <div
+              className="p-6 border-b"
+              style={{
+                borderTopWidth: '4px',
+                borderTopColor: selectedHeatmapTopic.status === 'good' ? '#10b981' : selectedHeatmapTopic.status === 'needs_attention' ? '#f59e0b' : '#ef4444'
+              }}
+            >
+              <div className="flex justify-between items-start">
+                <div>
+                  <h2 className="text-xl font-bold">{selectedHeatmapTopic.topic_name}</h2>
+                  <p className="text-sm text-gray-500">Grade {selectedHeatmapTopic.grade_level}</p>
+                </div>
+                <button
+                  onClick={() => setSelectedHeatmapTopic(null)}
+                  className="text-gray-400 hover:text-gray-600 text-2xl leading-none"
+                >
+                  &times;
+                </button>
+              </div>
+              <div className="grid grid-cols-3 gap-4 mt-4">
+                <div className="text-center">
+                  <div className="text-2xl font-bold text-green-600">{selectedHeatmapTopic.mastered_count}</div>
+                  <div className="text-xs text-gray-500">Mastered</div>
+                </div>
+                <div className="text-center">
+                  <div className="text-2xl font-bold text-yellow-600">{selectedHeatmapTopic.struggling_count}</div>
+                  <div className="text-xs text-gray-500">Struggling</div>
+                </div>
+                <div className="text-center">
+                  <div className="text-2xl font-bold text-gray-400">{selectedHeatmapTopic.untouched_count}</div>
+                  <div className="text-xs text-gray-500">Not Started</div>
+                </div>
+              </div>
+            </div>
+            <div className="p-6 overflow-y-auto flex-1">
+              <h3 className="font-semibold mb-3 text-red-700">Struggling Students</h3>
+              {selectedHeatmapTopic.struggling_students && selectedHeatmapTopic.struggling_students.length > 0 ? (
+                <div className="space-y-2">
+                  {selectedHeatmapTopic.struggling_students.map((student) => (
+                    <div key={student.student_id} className="flex justify-between items-center border rounded-lg p-3">
+                      <div>
+                        <div className="font-medium">{student.full_name}</div>
+                        <div className="text-sm text-gray-500">Average: {student.avg_score}%</div>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <span className={`px-2 py-1 rounded text-xs font-medium ${
+                          student.avg_score < 40 ? 'bg-red-100 text-red-800' : 'bg-yellow-100 text-yellow-800'
+                        }`}>
+                          {student.avg_score < 40 ? 'Critical' : 'Needs Work'}
+                        </span>
+                        <button
+                          onClick={() => {
+                            setSelectedHeatmapTopic(null);
+                            setActiveTab('students');
+                            const found = students.find(s => s.user_id === student.student_id);
+                            if (found) handleStudentSelect(found);
+                          }}
+                          className="text-blue-600 hover:text-blue-800 text-sm font-medium"
+                        >
+                          View
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <div className="text-center py-8 text-gray-500">
+                  No struggling students for this topic
+                </div>
+              )}
+            </div>
+            <div className="p-4 border-t bg-gray-50 flex justify-end">
+              <button
+                onClick={() => setSelectedHeatmapTopic(null)}
+                className="px-4 py-2 bg-gray-200 text-gray-700 rounded hover:bg-gray-300"
+              >
+                Close
               </button>
             </div>
           </div>
