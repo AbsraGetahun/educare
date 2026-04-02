@@ -2,3 +2,4 @@ venv/
 __pycache__/ 
 *.pyc 
 .env 
+educare-backend/curriculum_data/*.pdf 
