@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { getQuizzes, getApprovedMaterials, getProgressMap, getAvailableTopics, getStudentRecommendations } from '../services/api';
+import { getQuizzes, getApprovedMaterials, getProgressMap, getAvailableTopics, getStudentRecommendations, getCompletedQuizzes } from '../services/api';
 
 function StudentDashboard() {
   const [quizzes, setQuizzes] = useState([]);
@@ -9,6 +9,7 @@ function StudentDashboard() {
   const [grades, setGrades] = useState([]);
   const [availableTopics, setAvailableTopics] = useState([]);
   const [recommendations, setRecommendations] = useState([]);
+  const [completedQuizzes, setCompletedQuizzes] = useState({});
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [activeTab, setActiveTab] = useState('progress');
@@ -19,12 +20,13 @@ function StudentDashboard() {
   useEffect(() => {
     const fetchData = async () => {
       try {
-        const [quizzesData, materialsData, progressData, topicsData, recsData] = await Promise.all([
+        const [quizzesData, materialsData, progressData, topicsData, recsData, completedData] = await Promise.all([
           getQuizzes(),
           getApprovedMaterials(userId),
           getProgressMap(userId),
           getAvailableTopics(userId),
-          getStudentRecommendations(userId)
+          getStudentRecommendations(userId),
+          getCompletedQuizzes(userId)
         ]);
         setQuizzes(quizzesData.quizzes || []);
         setMaterials(materialsData.materials || []);
@@ -32,6 +34,7 @@ function StudentDashboard() {
         setGrades(progressData.grades || []);
         setAvailableTopics(topicsData.topics || []);
         setRecommendations(recsData.recommendations || []);
+        setCompletedQuizzes(completedData.completed_quizzes || {});
       } catch (err) {
         setError('Failed to load data');
       } finally {
@@ -49,14 +52,14 @@ function StudentDashboard() {
   const getColorClasses = (color) => {
     switch (color) {
       case 'green':
-        return 'bg-green-100 border-green-500 text-green-800';
+        return 'bg-green-50 border-green-400 text-green-800';
       case 'yellow':
-        return 'bg-yellow-100 border-yellow-500 text-yellow-800';
+        return 'bg-yellow-50 border-yellow-400 text-yellow-800';
       case 'blue':
-        return 'bg-blue-100 border-blue-500 text-blue-800';
+        return 'bg-blue-50 border-blue-400 text-blue-800';
       case 'gray':
       default:
-        return 'bg-gray-100 border-gray-400 text-gray-500';
+        return 'bg-gray-50 border-gray-300 text-gray-500';
     }
   };
 
@@ -70,71 +73,71 @@ function StudentDashboard() {
     }
   };
 
-  const getFilteredQuizzes = (topicId) => {
-    return quizzes.filter(q => q.topic === availableTopics.find(t => t.topic_id === topicId)?.topic_name);
-  };
-
   if (loading) {
     return (
-      <div className="min-h-screen flex items-center justify-center bg-gray-100">
-        <div className="text-xl text-gray-600">Loading dashboard...</div>
+      <div className="min-h-screen flex items-center justify-center bg-[#f3f4f6]">
+        <div className="flex items-center gap-3">
+          <div className="w-6 h-6 border-2 border-[#2563eb] border-t-transparent rounded-full animate-spin"></div>
+          <span className="text-gray-500 text-sm">Loading dashboard...</span>
+        </div>
       </div>
     );
   }
 
   return (
-    <div className="min-h-screen bg-gray-100">
-      <nav className="bg-white shadow-md p-4 sticky top-0 z-10">
-        <div className="container mx-auto flex justify-between items-center">
-          <h1 className="text-xl font-bold text-blue-600">EDUCARE</h1>
-          <div className="flex items-center gap-4">
-            <span className="text-gray-600">Welcome, {fullName}</span>
-            <button onClick={handleLogout} className="bg-red-500 text-white px-4 py-2 rounded hover:bg-red-600">Logout</button>
+    <div className="min-h-screen bg-[#f3f4f6]">
+      {/* Navbar */}
+      <nav className="bg-white border-b border-gray-200 sticky top-0 z-50">
+        <div className="max-w-7xl mx-auto px-4 h-14 flex justify-between items-center">
+          <div className="flex items-center gap-2">
+            <div className="w-8 h-8 bg-[#2563eb] rounded-lg flex items-center justify-center">
+              <svg className="w-4 h-4 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253" />
+              </svg>
+            </div>
+            <span className="text-base font-bold text-gray-900">EDUCARE</span>
+          </div>
+          <div className="flex items-center gap-3">
+            <span className="text-sm text-gray-600 hidden sm:block">{fullName}</span>
+            <button
+              onClick={handleLogout}
+              className="text-sm text-gray-500 hover:text-red-600 px-3 py-1.5 rounded-md hover:bg-red-50 transition font-medium"
+            >
+              Logout
+            </button>
           </div>
         </div>
       </nav>
 
       {/* Tabs */}
-      <div className="bg-white border-b">
-        <div className="container mx-auto">
-          <div className="flex space-x-8">
-            <button
-              onClick={() => setActiveTab('progress')}
-              className={`py-4 px-2 font-medium transition ${
-                activeTab === 'progress'
-                  ? 'text-blue-600 border-b-2 border-blue-600'
-                  : 'text-gray-500 hover:text-gray-700'
-              }`}
-            >
-              Progress Map
-            </button>
-            <button
-              onClick={() => setActiveTab('quizzes')}
-              className={`py-4 px-2 font-medium transition ${
-                activeTab === 'quizzes'
-                  ? 'text-blue-600 border-b-2 border-blue-600'
-                  : 'text-gray-500 hover:text-gray-700'
-              }`}
-            >
-              Available Quizzes
-            </button>
-            <button
-              onClick={() => setActiveTab('materials')}
-              className={`py-4 px-2 font-medium transition ${
-                activeTab === 'materials'
-                  ? 'text-blue-600 border-b-2 border-blue-600'
-                  : 'text-gray-500 hover:text-gray-700'
-              }`}
-            >
-              Study Materials
-            </button>
+      <div className="bg-white border-b border-gray-200">
+        <div className="max-w-7xl mx-auto px-4">
+          <div className="flex gap-1">
+            {[
+              { key: 'progress', label: 'Progress Map' },
+              { key: 'quizzes', label: 'Quizzes' },
+              { key: 'materials', label: 'Materials' },
+            ].map((tab) => (
+              <button
+                key={tab.key}
+                onClick={() => setActiveTab(tab.key)}
+                className={`py-2.5 px-4 text-sm font-medium transition border-b-2 ${
+                  activeTab === tab.key
+                    ? 'text-[#2563eb] border-[#2563eb]'
+                    : 'text-gray-500 border-transparent hover:text-gray-700 hover:border-gray-300'
+                }`}
+              >
+                {tab.label}
+              </button>
+            ))}
           </div>
         </div>
       </div>
 
-      <div className="container mx-auto p-6">
+      {/* Main Content */}
+      <div className="max-w-7xl mx-auto px-4 py-4">
         {error && (
-          <div className="bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded mb-4">
+          <div className="bg-red-50 border border-red-200 text-red-700 px-3 py-2 rounded-lg mb-4 text-sm">
             {error}
           </div>
         )}
@@ -142,43 +145,41 @@ function StudentDashboard() {
         {/* Progress Map Tab */}
         {activeTab === 'progress' && (
           <div>
-            <h2 className="text-2xl font-bold mb-2">Topic Progression Map</h2>
-            <p className="text-gray-600 mb-6">Track your mastery across all topics. Complete prerequisites to unlock new topics.</p>
+            <div className="mb-4">
+              <h2 className="text-xl font-bold text-gray-900 mb-1">Topic Progression Map</h2>
+              <p className="text-sm text-gray-500">Track your mastery across all topics. Complete prerequisites to unlock new ones.</p>
+            </div>
 
             {/* Legend */}
-            <div className="flex gap-6 mb-6 flex-wrap">
-              <div className="flex items-center gap-2">
-                <div className="w-4 h-4 rounded bg-green-500"></div>
-                <span className="text-sm text-gray-600">Mastered (70%+)</span>
-              </div>
-              <div className="flex items-center gap-2">
-                <div className="w-4 h-4 rounded bg-yellow-500"></div>
-                <span className="text-sm text-gray-600">In Progress</span>
-              </div>
-              <div className="flex items-center gap-2">
-                <div className="w-4 h-4 rounded bg-blue-500"></div>
-                <span className="text-sm text-gray-600">Available</span>
-              </div>
-              <div className="flex items-center gap-2">
-                <div className="w-4 h-4 rounded bg-gray-400"></div>
-                <span className="text-sm text-gray-600">Locked</span>
-              </div>
+            <div className="flex gap-4 mb-4 flex-wrap">
+              {[
+                { color: 'bg-green-500', label: 'Mastered (70%+)' },
+                { color: 'bg-yellow-500', label: 'In Progress' },
+                { color: 'bg-blue-500', label: 'Available' },
+                { color: 'bg-gray-400', label: 'Locked' },
+              ].map((item) => (
+                <div key={item.label} className="flex items-center gap-1.5">
+                  <div className={`w-3 h-3 rounded ${item.color}`}></div>
+                  <span className="text-xs text-gray-500">{item.label}</span>
+                </div>
+              ))}
             </div>
 
             {/* Progress by Grade */}
             {grades.map((grade) => (
-              <div key={grade} className="mb-8">
-                <h3 className="text-lg font-semibold mb-3 text-gray-700">Grade {grade}</h3>
-                <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
+              <div key={grade} className="mb-6">
+                <h3 className="text-sm font-semibold mb-2 text-gray-600 uppercase tracking-wide">Grade {grade}</h3>
+                <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-3">
                   {(progressMap[grade] || []).map((topic) => (
                     <div
                       key={topic.topic_id}
-                      className={`rounded-lg border-2 p-4 transition ${getColorClasses(topic.color)} ${
+                      className={`w-full rounded-lg border p-3 transition ${getColorClasses(topic.color)} ${
                         topic.color === 'blue' ? 'cursor-pointer hover:shadow-md' : ''
                       }`}
                       onClick={() => {
                         if (topic.color === 'blue') {
-                          navigate(`/quiz/${quizzes.find(q => q.topic === topic.topic_name)?.quiz_id || ''}`);
+                          const quiz = quizzes.find(q => q.topic === topic.topic_name);
+                          if (quiz) navigate(`/quiz/${quiz.quiz_id}`);
                         }
                       }}
                       title={
@@ -187,9 +188,9 @@ function StudentDashboard() {
                           : ''
                       }
                     >
-                      <div className="flex justify-between items-start mb-2">
-                        <h4 className="font-semibold text-sm">{topic.topic_name}</h4>
-                        <span className={`text-xs px-2 py-0.5 rounded-full ${
+                      <div className="flex justify-between items-start mb-1.5">
+                        <h4 className="font-semibold text-xs leading-tight">{topic.topic_name}</h4>
+                        <span className={`text-[10px] px-1.5 py-0.5 rounded-full flex-shrink-0 ml-1 ${
                           topic.color === 'green' ? 'bg-green-200' :
                           topic.color === 'yellow' ? 'bg-yellow-200' :
                           topic.color === 'blue' ? 'bg-blue-200' : 'bg-gray-200'
@@ -198,11 +199,11 @@ function StudentDashboard() {
                         </span>
                       </div>
                       {topic.avg_score !== null && (
-                        <div className="mb-2">
-                          <div className="text-xs text-gray-600 mb-1">Score: {topic.avg_score}%</div>
-                          <div className="w-full bg-white bg-opacity-50 rounded-full h-2">
+                        <div>
+                          <div className="text-[10px] text-gray-600 mb-1">{topic.avg_score}%</div>
+                          <div className="w-full bg-white bg-opacity-60 rounded-full h-1.5">
                             <div
-                              className={`h-2 rounded-full ${
+                              className={`h-1.5 rounded-full ${
                                 topic.avg_score >= 70 ? 'bg-green-500' : 'bg-yellow-500'
                               }`}
                               style={{ width: `${Math.min(topic.avg_score, 100)}%` }}
@@ -211,12 +212,9 @@ function StudentDashboard() {
                         </div>
                       )}
                       {topic.color === 'gray' && topic.prerequisite_names.length > 0 && (
-                        <p className="text-xs mt-2 opacity-75">
-                          Complete {topic.prerequisite_names.join(', ')} first
+                        <p className="text-[10px] mt-1 opacity-75 leading-tight">
+                          Need: {topic.prerequisite_names.join(', ')}
                         </p>
-                      )}
-                      {topic.color === 'blue' && (
-                        <p className="text-xs mt-2">Click to take quiz</p>
                       )}
                     </div>
                   ))}
@@ -225,8 +223,8 @@ function StudentDashboard() {
             ))}
 
             {grades.length === 0 && (
-              <div className="bg-white rounded-lg shadow-md p-12 text-center">
-                <p className="text-gray-500 text-lg">No topics available yet</p>
+              <div className="bg-white rounded-lg shadow-sm p-8 text-center">
+                <p className="text-gray-400 text-sm">No topics available yet</p>
               </div>
             )}
           </div>
@@ -235,106 +233,136 @@ function StudentDashboard() {
         {/* Quizzes Tab */}
         {activeTab === 'quizzes' && (
           <div>
-            {/* Recommended for You */}
-            <div className="mb-8">
-              <h2 className="text-2xl font-bold mb-1">Recommended for You</h2>
-              <p className="text-gray-600 mb-4">Quizzes picked based on your performance to help you improve.</p>
+            {/* Recommended */}
+            <div className="mb-6">
+              <h2 className="text-xl font-bold text-gray-900 mb-1">Recommended for You</h2>
+              <p className="text-sm text-gray-500 mb-3">Quizzes picked based on your performance.</p>
               {recommendations.length > 0 ? (
-                <div className="flex gap-4 overflow-x-auto pb-2 -mx-1 px-1">
-                  {recommendations.map((rec) => (
+                <div className="flex gap-3 overflow-x-auto pb-2 -mx-1 px-1">
+                  {recommendations.map((rec) => {
+                    const bestScore = completedQuizzes[String(rec.quiz_id)];
+                    const completed = bestScore !== undefined;
+                    return (
                     <div
                       key={rec.quiz_id}
-                      className="flex-shrink-0 w-72 bg-white rounded-lg shadow-md border border-blue-100 p-5 hover:shadow-lg transition"
+                      className={`flex-shrink-0 w-64 rounded-lg shadow-sm p-3 hover:shadow-md transition ${
+                        completed ? 'bg-green-50 border border-green-200' : 'bg-white border border-blue-100'
+                      }`}
                     >
-                      <div className="flex items-center gap-2 mb-2">
-                        <span className="text-xs px-2 py-0.5 rounded-full bg-blue-100 text-blue-700 font-medium">
+                      <div className="flex items-center gap-1.5 mb-1.5">
+                        <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-blue-100 text-blue-700 font-medium">
                           {rec.topic_name}
                         </span>
-                        {rec.avg_score !== null && (
-                          <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${
+                        {completed ? (
+                          <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-green-100 text-green-700 font-medium">
+                            ✓ {bestScore}%
+                          </span>
+                        ) : rec.avg_score !== null && (
+                          <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium ${
                             rec.avg_score < 40 ? 'bg-red-100 text-red-700' : 'bg-yellow-100 text-yellow-700'
                           }`}>
                             {rec.avg_score}%
                           </span>
                         )}
                       </div>
-                      <h3 className="font-semibold text-gray-800 mb-1">{rec.title}</h3>
-                      <p className="text-sm text-gray-500 mb-3">{rec.reason}</p>
+                      <h3 className="font-semibold text-gray-800 text-sm mb-1">{rec.title}</h3>
+                      <p className="text-xs text-gray-500 mb-2 line-clamp-2">{rec.reason}</p>
                       <div className="flex items-center justify-between">
-                        <span className="text-xs text-gray-400">{rec.total_marks} marks</span>
+                        <span className="text-[10px] text-gray-400">{rec.total_marks} marks</span>
                         <button
                           onClick={() => navigate(`/quiz/${rec.quiz_id}`)}
-                          className="bg-blue-600 text-white px-4 py-1.5 rounded text-sm hover:bg-blue-700 transition"
+                          className={`px-3 py-1 rounded-md text-xs font-medium transition ${
+                            completed
+                              ? 'bg-white border border-green-300 text-green-700 hover:bg-green-100'
+                              : 'bg-[#2563eb] text-white hover:bg-[#1d4ed8]'
+                          }`}
                         >
-                          Take Quiz
+                          {completed ? 'Retake' : 'Take Quiz'}
                         </button>
                       </div>
                     </div>
-                  ))}
+                    );
+                  })}
                 </div>
               ) : (
-                <div className="bg-white rounded-lg shadow-md p-8 text-center">
-                  <div className="text-3xl mb-2"></div>
-                  <p className="text-lg font-medium text-gray-700">Great job! No recommendations needed</p>
-                  <p className="text-sm text-gray-500 mt-1">You're performing well across all topics.</p>
+                <div className="bg-white rounded-lg shadow-sm p-6 text-center">
+                  <p className="text-sm font-medium text-gray-600">No recommendations right now</p>
+                  <p className="text-xs text-gray-400 mt-0.5">You're performing well across all topics.</p>
                 </div>
               )}
             </div>
 
-            <h2 className="text-2xl font-bold mb-6">Available Quizzes</h2>
+            <h2 className="text-xl font-bold text-gray-900 mb-3">Available Quizzes</h2>
 
-            {/* Available (unlocked) topics with quizzes */}
             {availableTopics.filter(t => t.prerequisites_met).length > 0 ? (
-              <div className="space-y-6">
+              <div className="space-y-3">
                 {availableTopics.filter(t => t.prerequisites_met).map((topic) => {
                   const topicQuizzes = quizzes.filter(q => q.topic === topic.topic_name);
                   if (topicQuizzes.length === 0) return null;
                   return (
-                    <div key={topic.topic_id} className="bg-white rounded-lg shadow-md p-6">
-                      <div className="flex justify-between items-center mb-4">
-                        <h3 className="text-lg font-semibold">{topic.topic_name}</h3>
-                        <span className={`text-sm px-3 py-1 rounded-full ${
-                          topic.status === 'mastered' ? 'bg-green-100 text-green-800' :
-                          topic.status === 'in_progress' ? 'bg-yellow-100 text-yellow-800' :
-                          'bg-blue-100 text-blue-800'
+                    <div key={topic.topic_id} className="bg-white rounded-lg shadow-sm p-4">
+                      <div className="flex justify-between items-center mb-3">
+                        <h3 className="text-sm font-semibold text-gray-900">{topic.topic_name}</h3>
+                        <span className={`text-[10px] px-2 py-0.5 rounded-full font-medium ${
+                          topic.status === 'mastered' ? 'bg-green-100 text-green-700' :
+                          topic.status === 'in_progress' ? 'bg-yellow-100 text-yellow-700' :
+                          'bg-blue-100 text-blue-700'
                         }`}>
                           {topic.status === 'mastered' ? 'Mastered' :
                            topic.status === 'in_progress' ? `In Progress (${topic.avg_score}%)` : 'Not Started'}
                         </span>
                       </div>
-                      <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-4">
-                        {topicQuizzes.map((quiz) => (
-                          <div key={quiz.quiz_id} className="border rounded-lg p-4">
-                            <h4 className="font-medium mb-2">{quiz.title}</h4>
-                            <p className="text-sm text-gray-500 mb-2">Marks: {quiz.total_marks}</p>
-                            <button
-                              onClick={() => navigate(`/quiz/${quiz.quiz_id}`)}
-                              className="w-full bg-blue-600 text-white py-2 rounded hover:bg-blue-700 text-sm"
-                            >
-                              Take Quiz
-                            </button>
-                          </div>
-                        ))}
+                      <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-3">
+                        {topicQuizzes.map((quiz) => {
+                          const bestScore = completedQuizzes[String(quiz.quiz_id)];
+                          const completed = bestScore !== undefined;
+                          return (
+                            <div key={quiz.quiz_id} className={`border rounded-lg p-3 transition ${completed ? 'border-green-200 bg-green-50' : 'border-gray-200 hover:border-gray-300'}`}>
+                              <div className="flex items-center justify-between mb-1">
+                                <h4 className="font-medium text-sm text-gray-900">{quiz.title}</h4>
+                                {completed && (
+                                  <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-green-100 text-green-700 font-medium flex-shrink-0 ml-1">
+                                    ✓ Done
+                                  </span>
+                                )}
+                              </div>
+                              <p className="text-xs text-gray-500 mb-1">{quiz.total_marks} marks</p>
+                              {completed && (
+                                <p className="text-xs text-green-700 font-medium mb-2">Best: {bestScore}/{quiz.total_marks}</p>
+                              )}
+                              <button
+                                onClick={() => navigate(`/quiz/${quiz.quiz_id}`)}
+                                className={`w-full py-1.5 rounded-md text-xs font-medium transition ${
+                                  completed
+                                    ? 'bg-white border border-green-300 text-green-700 hover:bg-green-100'
+                                    : 'bg-[#2563eb] text-white hover:bg-[#1d4ed8]'
+                                }`}
+                              >
+                                {completed ? 'Retake' : 'Take Quiz'}
+                              </button>
+                            </div>
+                          );
+                        })}
                       </div>
                     </div>
                   );
                 })}
               </div>
             ) : (
-              <div className="bg-white rounded-lg shadow-md p-12 text-center">
-                <p className="text-gray-500 text-lg">No quizzes available</p>
+              <div className="bg-white rounded-lg shadow-sm p-8 text-center">
+                <p className="text-gray-400 text-sm">No quizzes available</p>
               </div>
             )}
 
             {/* Locked topics */}
             {availableTopics.filter(t => !t.prerequisites_met).length > 0 && (
-              <div className="mt-8">
-                <h3 className="text-xl font-semibold mb-4 text-gray-500">Locked Topics</h3>
-                <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-4">
+              <div className="mt-6">
+                <h3 className="text-sm font-semibold mb-2 text-gray-500 uppercase tracking-wide">Locked Topics</h3>
+                <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-3">
                   {availableTopics.filter(t => !t.prerequisites_met).map((topic) => (
-                    <div key={topic.topic_id} className="bg-gray-100 rounded-lg p-4 opacity-60">
-                      <h4 className="font-medium text-gray-500">{topic.topic_name}</h4>
-                      <p className="text-sm text-gray-400 mt-1">Complete prerequisites first</p>
+                    <div key={topic.topic_id} className="bg-gray-50 rounded-lg p-3 opacity-60">
+                      <h4 className="font-medium text-sm text-gray-500">{topic.topic_name}</h4>
+                      <p className="text-xs text-gray-400 mt-0.5">Complete prerequisites first</p>
                     </div>
                   ))}
                 </div>
@@ -346,26 +374,32 @@ function StudentDashboard() {
         {/* Materials Tab */}
         {activeTab === 'materials' && (
           <div>
-            <h2 className="text-2xl font-bold mb-4">Study Materials</h2>
+            <h2 className="text-xl font-bold text-gray-900 mb-3">Study Materials</h2>
             {materials.length > 0 ? (
-              <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-6">
+              <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-4">
                 {materials.map((material) => (
-                  <div key={material.material_id} className="bg-white rounded-lg shadow-md p-6">
-                    <h3 className="text-lg font-semibold mb-2">{material.title}</h3>
-                    <p className="text-sm text-gray-500 mb-2">Topic: {material.topic_name}</p>
-                    <p className="text-sm text-gray-500 mb-4">Added: {new Date(material.generated_date).toLocaleDateString()}</p>
-                    <div className="bg-gray-50 rounded p-4 mb-4">
-                      <p className="text-gray-700 whitespace-pre-wrap">{material.content}</p>
+                  <div key={material.material_id} className="bg-white rounded-lg shadow-sm p-4">
+                    <h3 className="text-sm font-semibold text-gray-900 mb-1">{material.title}</h3>
+                    <div className="flex items-center gap-2 mb-2">
+                      <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-blue-100 text-blue-700 font-medium">
+                        {material.topic_name}
+                      </span>
+                      <span className="text-[10px] text-gray-400">
+                        {new Date(material.generated_date).toLocaleDateString()}
+                      </span>
+                    </div>
+                    <div className="bg-gray-50 rounded-md p-3 mb-2 max-h-40 overflow-y-auto">
+                      <p className="text-xs text-gray-700 whitespace-pre-wrap leading-relaxed">{material.content}</p>
                     </div>
                     {material.source_citation && (
-                      <p className="text-sm text-gray-500 italic">Source: {material.source_citation}</p>
+                      <p className="text-[10px] text-gray-400 italic">Source: {material.source_citation}</p>
                     )}
                   </div>
                 ))}
               </div>
             ) : (
-              <div className="bg-white rounded-lg shadow-md p-12 text-center">
-                <p className="text-gray-500 text-lg">No study materials available</p>
+              <div className="bg-white rounded-lg shadow-sm p-8 text-center">
+                <p className="text-gray-400 text-sm">No study materials available</p>
               </div>
             )}
           </div>

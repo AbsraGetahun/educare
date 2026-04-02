@@ -48,22 +48,22 @@ function QuizTaking() {
 
   const handleSubmit = async () => {
     if (answers.some(a => a === null)) {
-      alert('Please answer all questions');
+      setError('Please answer all questions before submitting');
       return;
     }
 
     setSubmitting(true);
+    setError('');
     try {
       const studentId = localStorage.getItem('user_id');
       const formattedAnswers = answers.map((answer, index) => ({
-        question_id: index + 1,
+        question_id: quiz.questions[index].question_id,
         answer: answer
       }));
       const response = await submitQuiz(quizId, studentId, formattedAnswers);
       setResult(response);
     } catch (err) {
-      alert('Failed to submit quiz');
-    } finally {
+      setError(err.response?.data?.error || 'Failed to submit quiz. Please try again.');
       setSubmitting(false);
     }
   };
@@ -154,6 +154,11 @@ function QuizTaking() {
         <div className="bg-white rounded-lg shadow-md p-6">
           <h1 className="text-2xl font-bold text-blue-600 mb-2">{quiz.title}</h1>
           <p className="text-gray-600 mb-4">Topic: {quiz.topic}</p>
+          {error && (
+            <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-lg mb-4 text-sm">
+              {error}
+            </div>
+          )}
           <div className="mb-4 text-sm text-gray-500">Question {currentQuestion + 1} of {quiz.questions.length}</div>
           <div className="mb-6">
             <h3 className="text-lg font-semibold mb-4">{currentQ.question_text}</h3>
@@ -173,7 +178,12 @@ function QuizTaking() {
             {!isLastQuestion ? (
               <button onClick={handleNext} className="px-4 py-2 bg-blue-600 text-white rounded">Next</button>
             ) : (
-              <button onClick={handleSubmit} disabled={submitting} className="px-4 py-2 bg-green-600 text-white rounded">{submitting ? 'Submitting...' : 'Submit Quiz'}</button>
+              <button onClick={handleSubmit} disabled={submitting} className="px-6 py-2 bg-green-600 text-white rounded font-medium disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2">
+                {submitting && (
+                  <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
+                )}
+                {submitting ? 'Submitting...' : 'Submit Quiz'}
+              </button>
             )}
           </div>
         </div>

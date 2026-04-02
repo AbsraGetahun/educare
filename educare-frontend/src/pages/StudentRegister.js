@@ -18,7 +18,13 @@ function StudentRegister() {
     setLoading(true);
 
     try {
-      await register(fullName, email, password, gradeLevel, section);
+      await register({
+        full_name: fullName,
+        email,
+        password,
+        grade_level: gradeLevel,
+        section
+      });
       alert('Registration successful! Please login.');
       navigate('/student/login');
     } catch (err) {
