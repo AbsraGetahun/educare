@@ -3,3 +3,4 @@ __pycache__/
 *.pyc 
 .env 
 educare-backend/curriculum_data/*.pdf 
+educare-backend/curriculum_data/*.pdf 
