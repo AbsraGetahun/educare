@@ -31,6 +31,29 @@ def get_db_connection():
 
 # ==================== DATABASE SETUP ====================
 
+# Create teachers table if it doesn't exist
+def init_teachers_table():
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS teachers (
+                teacher_id INT AUTO_INCREMENT PRIMARY KEY,
+                user_id INT NOT NULL,
+                qualification VARCHAR(255),
+                subject VARCHAR(255),
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE,
+                UNIQUE KEY unique_teacher (user_id)
+            )
+        """)
+        conn.commit()
+        cursor.close()
+        conn.close()
+        print("Teachers table initialized successfully")
+    except Exception as e:
+        print(f"Error initializing teachers table: {e}")
+
 # Create family table if it doesn't exist
 def init_family_table():
     try:
@@ -55,7 +78,8 @@ def init_family_table():
     except Exception as e:
         print(f"Error initializing family table: {e}")
 
-# Initialize family table on startup
+# Initialize tables on startup
+init_teachers_table()
 init_family_table()
 
 # ==================== BASIC ENDPOINTS ====================
@@ -256,22 +280,31 @@ def register():
         
         if not full_name or not email or not password:
             return jsonify({"error": "All fields required"}), 400
-        
+        if not grade_level or not section:
+            return jsonify({"error": "Grade level and section are required"}), 400
+
+        try:
+            grade_level = int(grade_level)
+        except (ValueError, TypeError):
+            return jsonify({"error": "Grade level must be a number"}), 400
+
+        section = str(section).strip()
+
         conn = get_db_connection()
         cursor = conn.cursor()
-        
+
         cursor.execute("SELECT user_id FROM users WHERE email = %s", (email,))
         if cursor.fetchone():
             cursor.close()
             conn.close()
             return jsonify({"error": "Email already registered"}), 400
-        
+
         cursor.execute(
             "INSERT INTO users (full_name, email, password, role) VALUES (%s, %s, %s, 'student')",
             (full_name, email, password)
         )
-        user_id = cursor.lastrowid
-        
+        user_id = int(cursor.lastrowid)
+
         cursor.execute(
             "INSERT INTO students (user_id, grade_level, section, enrollment_date) VALUES (%s, %s, %s, CURDATE())",
             (user_id, grade_level, section)
@@ -323,7 +356,7 @@ def get_quiz(quiz_id):
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
-        
+
         cursor.execute("""
             SELECT q.quiz_id, q.title, q.total_marks, q.time_limit, t.topic_name
             FROM quizzes q
@@ -331,34 +364,42 @@ def get_quiz(quiz_id):
             WHERE q.quiz_id = %s
         """, (quiz_id,))
         quiz = cursor.fetchone()
-        
+
         if not quiz:
+            cursor.close()
+            conn.close()
             return jsonify({"error": "Quiz not found"}), 404
-        
-        questions = [
-            {
-                'question_id': 1,
-                'question_text': 'What is 2 + 2?',
-                'options': ['3', '4', '5', '6'],
-                'correct_answer': 'B'
-            },
-            {
-                'question_id': 2,
-                'question_text': 'What is the square root of 16?',
-                'options': ['2', '3', '4', '5'],
-                'correct_answer': 'C'
-            },
-            {
-                'question_id': 3,
-                'question_text': 'Solve: x + 5 = 10. What is x?',
-                'options': ['3', '4', '5', '6'],
-                'correct_answer': 'C'
-            }
-        ]
-        
+
+        questions = None
+        try:
+            cursor.execute("""
+                SELECT question_id, question_text, option_a, option_b, option_c, option_d
+                FROM questions
+                WHERE quiz_id = %s
+                ORDER BY question_id
+            """, (quiz_id,))
+            question_rows = cursor.fetchall()
+            if question_rows:
+                questions = []
+                for row in question_rows:
+                    questions.append({
+                        'question_id': row[0],
+                        'question_text': row[1],
+                        'options': [row[2], row[3], row[4], row[5]]
+                    })
+        except Exception:
+            pass
+
         cursor.close()
         conn.close()
-        
+
+        if not questions:
+            questions = [
+                {'question_id': 1, 'question_text': 'What is 2 + 2?', 'options': ['3', '4', '5', '6']},
+                {'question_id': 2, 'question_text': 'What is the square root of 16?', 'options': ['2', '3', '4', '5']},
+                {'question_id': 3, 'question_text': 'Solve: x + 5 = 10. What is x?', 'options': ['3', '4', '5', '6']}
+            ]
+
         return jsonify({
             'quiz_id': quiz[0],
             'title': quiz[1],
@@ -376,30 +417,58 @@ def submit_quiz(quiz_id):
         data = request.get_json()
         student_id = data.get('student_id')
         answers = data.get('answers')
-        
+
         if not student_id or not answers:
             return jsonify({"error": "student_id and answers required"}), 400
-        
+
+        try:
+            student_id = int(student_id)
+        except (ValueError, TypeError):
+            return jsonify({"error": "student_id must be a number"}), 400
+
+        conn = get_db_connection()
+        cursor = conn.cursor()
+
+        # Look up student_id from students table using user_id
+        cursor.execute("SELECT student_id FROM students WHERE user_id = %s", (student_id,))
+        student_record = cursor.fetchone()
+        if not student_record:
+            cursor.close()
+            conn.close()
+            return jsonify({"error": "Student record not found"}), 404
+        student_id = student_record[0]
+
+        # Grade answers
         correct_answers = {1: 'B', 2: 'C', 3: 'C'}
+        try:
+            cursor.execute("""
+                SELECT question_id, correct_answer
+                FROM questions
+                WHERE quiz_id = %s
+                ORDER BY question_id
+            """, (quiz_id,))
+            question_rows = cursor.fetchall()
+            if question_rows:
+                correct_answers = {row[0]: row[1] for row in question_rows}
+        except Exception:
+            pass
+
         score = 0
         points_per_question = 5
-        
+
         for answer in answers:
             question_id = answer.get('question_id')
             user_answer = answer.get('answer')
             if correct_answers.get(question_id) == user_answer:
                 score += points_per_question
-        
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        
+
         cursor.execute("""
             INSERT INTO quiz_attempt (student_id, quiz_id, score, completed_at)
             VALUES (%s, %s, %s, NOW())
         """, (student_id, quiz_id, score))
-        
+
         conn.commit()
-        
+
         # Check mastery for the quiz's topic after submission
         cursor.execute("SELECT topic_id FROM quizzes WHERE quiz_id = %s", (quiz_id,))
         topic_row = cursor.fetchone()
@@ -417,21 +486,22 @@ def submit_quiz(quiz_id):
                 'mastered': mastered,
                 'threshold': 70
             }
-        
+
         cursor.close()
         conn.close()
-        
+
+        total_possible = len(answers) * points_per_question
         response_data = {
             "message": "Quiz submitted successfully",
             "score": score,
-            "total_possible": len(answers) * points_per_question,
-            "percentage": (score / (len(answers) * points_per_question)) * 100
+            "total_possible": total_possible,
+            "percentage": (score / total_possible) * 100 if total_possible > 0 else 0
         }
         if mastery_update:
             response_data["mastery_update"] = mastery_update
-        
+
         return jsonify(response_data)
-        
+
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
@@ -1034,33 +1104,24 @@ def admin_get_users():
         conn = get_db_connection()
         cursor = conn.cursor()
         cursor.execute("""
-            SELECT u.user_id, u.full_name, u.email, u.role, u.created_at,
-                   s.grade_level, s.section,
-                   t.qualification, t.subject
-            FROM users u
-            LEFT JOIN students s ON u.user_id = s.user_id
-            LEFT JOIN teachers t ON u.user_id = t.user_id
-            ORDER BY u.created_at DESC
+            SELECT user_id, full_name, email, role, created_at
+            FROM users
+            ORDER BY created_at DESC
         """)
         users = cursor.fetchall()
         cursor.close()
         conn.close()
-        
+
         users_list = []
         for user in users:
-            user_data = {
+            users_list.append({
                 'user_id': user[0],
                 'full_name': user[1],
                 'email': user[2],
                 'role': user[3],
-                'created_at': str(user[4]) if user[4] else None,
-                'grade_level': user[5],
-                'section': user[6],
-                'qualification': user[7],
-                'subject': user[8]
-            }
-            users_list.append(user_data)
-        
+                'created_at': str(user[4]) if user[4] else None
+            })
+
         return jsonify({"users": users_list})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -1079,7 +1140,7 @@ def admin_get_users_by_role(role):
                 SELECT u.user_id, u.full_name, u.email, u.role, u.created_at,
                        s.grade_level, s.section
                 FROM users u
-                JOIN students s ON u.user_id = s.user_id
+                LEFT JOIN students s ON u.user_id = s.user_id
                 WHERE u.role = 'student'
                 ORDER BY u.created_at DESC
             """)
@@ -1100,7 +1161,7 @@ def admin_get_users_by_role(role):
                 SELECT u.user_id, u.full_name, u.email, u.role, u.created_at,
                        t.qualification, t.subject
                 FROM users u
-                JOIN teachers t ON u.user_id = t.user_id
+                LEFT JOIN teachers t ON u.user_id = t.user_id
                 WHERE u.role = 'teacher'
                 ORDER BY u.created_at DESC
             """)
@@ -1121,7 +1182,7 @@ def admin_get_users_by_role(role):
                 SELECT u.user_id, u.full_name, u.email, u.role, u.created_at,
                        f.relationship
                 FROM users u
-                JOIN family f ON u.user_id = f.user_id
+                LEFT JOIN family f ON u.user_id = f.user_id
                 WHERE u.role = 'family'
                 ORDER BY u.created_at DESC
             """)
@@ -1206,6 +1267,14 @@ def admin_create_user():
                 cursor.close()
                 conn.close()
                 return jsonify({"error": "Grade level and section are required for students"}), 400
+            try:
+                grade_level = int(grade_level)
+            except (ValueError, TypeError):
+                conn.rollback()
+                cursor.close()
+                conn.close()
+                return jsonify({"error": "Grade level must be a number"}), 400
+            section = str(section).strip()
             cursor.execute(
                 "INSERT INTO students (user_id, grade_level, section, enrollment_date) VALUES (%s, %s, %s, CURDATE())",
                 (user_id, grade_level, section)
@@ -1317,6 +1386,14 @@ def admin_update_user(user_id):
         
         if role == 'student':
             if grade_level and section:
+                try:
+                    grade_level = int(grade_level)
+                except (ValueError, TypeError):
+                    conn.rollback()
+                    cursor.close()
+                    conn.close()
+                    return jsonify({"error": "Grade level must be a number"}), 400
+                section = str(section).strip()
                 cursor.execute("SELECT user_id FROM students WHERE user_id = %s", (user_id,))
                 if cursor.fetchone():
                     cursor.execute(
@@ -1939,6 +2016,39 @@ def get_student_recommendations(student_id):
         cursor.close()
         conn.close()
         return jsonify({"recommendations": recommendations[:5]})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/api/student/<int:student_id>/completed-quizzes', methods=['GET'])
+def get_completed_quizzes(student_id):
+    """Return quiz_ids the student has completed with their best scores."""
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+
+        # Look up actual student_id from students table (URL param is user_id)
+        cursor.execute("SELECT student_id FROM students WHERE user_id = %s", (student_id,))
+        student_record = cursor.fetchone()
+        if not student_record:
+            cursor.close()
+            conn.close()
+            return jsonify({"completed_quizzes": {}})
+        actual_student_id = student_record[0]
+
+        cursor.execute("""
+            SELECT quiz_id, MAX(score) as best_score
+            FROM quiz_attempt
+            WHERE student_id = %s
+            GROUP BY quiz_id
+        """, (actual_student_id,))
+        rows = cursor.fetchall()
+        cursor.close()
+        conn.close()
+
+        completed = {}
+        for row in rows:
+            completed[str(row[0])] = row[1]
+        return jsonify({"completed_quizzes": completed})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
