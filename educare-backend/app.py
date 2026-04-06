@@ -1,6 +1,6 @@
 from flask import Flask, jsonify, request
 from flask_cors import CORS
-from flask_jwt_extended import create_access_token, JWTManager
+from flask_jwt_extended import create_access_token, JWTManager, jwt_required, get_jwt_identity
 import MySQLdb
 import random
 import json
@@ -14,6 +14,7 @@ CORS(app, origins=["http://localhost:3000"], supports_credentials=True)
 
 # JWT Configuration
 app.config['JWT_SECRET_KEY'] = 'educare-secret-key'
+app.config['JWT_ACCESS_TOKEN_EXPIRES'] = False  # tokens don't expire in dev
 jwt = JWTManager(app)
 
 # Database configuration
@@ -28,6 +29,16 @@ db_config = {
 # Function to get database connection
 def get_db_connection():
     return MySQLdb.connect(**db_config)
+
+
+def require_role(*allowed_roles):
+    """Return (identity, error_response) tuple. error_response is None if OK."""
+    identity = get_jwt_identity()
+    if not identity:
+        return None, (jsonify({"error": "Authentication required"}), 401)
+    if identity.get('role') not in allowed_roles:
+        return None, (jsonify({"error": "Access denied: insufficient permissions"}), 403)
+    return identity, None
 
 # ==================== DATABASE SETUP ====================
 
@@ -412,8 +423,12 @@ def get_quiz(quiz_id):
         return jsonify({"error": str(e)}), 500
 
 @app.route('/api/quizzes/<int:quiz_id>/submit', methods=['POST'])
+@jwt_required()
 def submit_quiz(quiz_id):
     try:
+        _, err = require_role('student', 'admin')
+        if err:
+            return err
         data = request.get_json()
         student_id = data.get('student_id')
         answers = data.get('answers')
@@ -541,8 +556,12 @@ def get_quiz_results(quiz_id):
         return jsonify({"error": str(e)}), 500
 
 @app.route('/api/quiz/create', methods=['POST'])
+@jwt_required()
 def create_quiz():
     try:
+        _, err = require_role('teacher', 'admin')
+        if err:
+            return err
         data = request.get_json()
         title = data.get('title')
         topic_id = data.get('topic_id')
@@ -903,8 +922,12 @@ def get_family_student_recommendations(student_id):
 # ==================== MATERIAL APPROVAL ENDPOINTS ====================
 
 @app.route('/api/materials/pending', methods=['GET'])
+@jwt_required(optional=True)
 def get_pending_materials():
     try:
+        identity = get_jwt_identity()
+        if identity and identity.get('role') not in ('teacher', 'admin'):
+            return jsonify({"error": "Access denied"}), 403
         conn = get_db_connection()
         cursor = conn.cursor()
         cursor.execute("""
@@ -936,8 +959,12 @@ def get_pending_materials():
         return jsonify({"error": str(e)}), 500
 
 @app.route('/api/materials/approve/<int:material_id>', methods=['POST'])
+@jwt_required()
 def approve_material(material_id):
     try:
+        _, err = require_role('teacher', 'admin')
+        if err:
+            return err
         conn = get_db_connection()
         cursor = conn.cursor()
         
@@ -962,8 +989,12 @@ def approve_material(material_id):
         return jsonify({"error": str(e)}), 500
 
 @app.route('/api/materials/reject/<int:material_id>', methods=['POST'])
+@jwt_required()
 def reject_material(material_id):
     try:
+        _, err = require_role('teacher', 'admin')
+        if err:
+            return err
         conn = get_db_connection()
         cursor = conn.cursor()
         
@@ -1099,8 +1130,12 @@ def admin_login():
         return jsonify({"error": str(e)}), 500
 
 @app.route('/api/admin/users', methods=['GET'])
+@jwt_required()
 def admin_get_users():
     try:
+        _, err = require_role('admin')
+        if err:
+            return err
         conn = get_db_connection()
         cursor = conn.cursor()
         cursor.execute("""
@@ -1127,8 +1162,12 @@ def admin_get_users():
         return jsonify({"error": str(e)}), 500
 
 @app.route('/api/admin/users/<role>', methods=['GET'])
+@jwt_required()
 def admin_get_users_by_role(role):
     try:
+        _, err = require_role('admin')
+        if err:
+            return err
         if role not in ['student', 'teacher', 'family', 'admin']:
             return jsonify({"error": "Invalid role"}), 400
         
@@ -1223,8 +1262,12 @@ def admin_get_users_by_role(role):
         return jsonify({"error": str(e)}), 500
 
 @app.route('/api/admin/user', methods=['POST'])
+@jwt_required()
 def admin_create_user():
     try:
+        _, err = require_role('admin')
+        if err:
+            return err
         data = request.get_json()
         full_name = data.get('full_name')
         email = data.get('email')
@@ -1327,8 +1370,12 @@ def admin_create_user():
         return jsonify({"error": str(e)}), 500
 
 @app.route('/api/admin/user/<int:user_id>', methods=['PUT'])
+@jwt_required()
 def admin_update_user(user_id):
     try:
+        _, err = require_role('admin')
+        if err:
+            return err
         data = request.get_json()
         full_name = data.get('full_name')
         email = data.get('email')
@@ -1436,8 +1483,12 @@ def admin_update_user(user_id):
         return jsonify({"error": str(e)}), 500
 
 @app.route('/api/admin/user/<int:user_id>', methods=['DELETE'])
+@jwt_required()
 def admin_delete_user(user_id):
     try:
+        _, err = require_role('admin')
+        if err:
+            return err
         conn = get_db_connection()
         cursor = conn.cursor()
         
@@ -1461,8 +1512,12 @@ def admin_delete_user(user_id):
         return jsonify({"error": str(e)}), 500
 
 @app.route('/api/admin/stats', methods=['GET'])
+@jwt_required()
 def admin_get_stats():
     try:
+        _, err = require_role('admin')
+        if err:
+            return err
         conn = get_db_connection()
         cursor = conn.cursor()
         
@@ -1661,9 +1716,13 @@ def check_mastery(student_id, topic_id):
         return jsonify({"error": str(e)}), 500
 
 @app.route('/api/student/<int:student_id>/progress-map', methods=['GET'])
+@jwt_required()
 def get_progress_map(student_id):
     """Visual map of mastered vs locked topics grouped by grade level."""
     try:
+        _, err = require_role('student', 'teacher', 'admin', 'family')
+        if err:
+            return err
         conn = get_db_connection()
         cursor = conn.cursor()
         
@@ -1719,9 +1778,13 @@ def get_progress_map(student_id):
         return jsonify({"error": str(e)}), 500
 
 @app.route('/api/teacher/mastery-overview', methods=['GET'])
+@jwt_required()
 def get_teacher_mastery_overview():
     """Class-wide mastery summary showing % of students who mastered each topic."""
     try:
+        _, err = require_role('teacher', 'admin')
+        if err:
+            return err
         conn = get_db_connection()
         cursor = conn.cursor()
         
@@ -1775,7 +1838,7 @@ def get_teacher_mastery_overview():
                 SELECT u.user_id, u.full_name
                 FROM users u
                 WHERE u.role = 'student'
-                AND u.user_id NOT (
+                AND u.user_id NOT IN (
                     SELECT DISTINCT qa.student_id
                     FROM quiz_attempt qa
                     JOIN quizzes q ON qa.quiz_id = q.quiz_id
@@ -1810,9 +1873,13 @@ def get_teacher_mastery_overview():
         return jsonify({"error": str(e)}), 500
 
 @app.route('/api/teacher/heatmap', methods=['GET'])
+@jwt_required()
 def get_teacher_heatmap():
     """Class-wide gap heatmap showing mastery percentage and student breakdown per topic."""
     try:
+        _, err = require_role('teacher', 'admin')
+        if err:
+            return err
         conn = get_db_connection()
         cursor = conn.cursor()
 
@@ -2179,6 +2246,169 @@ def faiss_test():
         })
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
+# ==================== LOCAL RAG GENERATION ENDPOINT ====================
+
+@app.route('/api/materials/generate', methods=['POST'])
+def generate_practice_material():
+    """
+    Part 3: Local RAG generation endpoint.
+    Accepts topic_name, student_id, difficulty.
+    Uses FAISS search + question_generator to create practice material,
+    saves it to the material table with approval_status='pending'.
+    """
+    try:
+        from question_generator import generate_questions
+        from curriculum_extractor import extract_content
+
+        data = request.get_json() or {}
+        topic_name = data.get('topic_name', '').strip()
+        student_id = data.get('student_id')
+        difficulty = data.get('difficulty', 'medium')
+
+        if not topic_name:
+            return jsonify({"error": "topic_name is required"}), 400
+
+        # ── Step 1: FAISS search for curriculum context ──────────────────────
+        index_path = os.path.join('faiss_index', 'index.faiss')
+        vectorizer_path = os.path.join('faiss_index', 'vectorizer.pkl')
+        metadata_path = os.path.join('faiss_index', 'metadata.json')
+
+        curriculum_chunks = []
+        source_citation = f"Grade 12 Mathematics Curriculum - {topic_name}"
+
+        try:
+            index = faiss.read_index(index_path)
+            with open(vectorizer_path, 'rb') as f:
+                vectorizer = pickle.load(f)
+            with open(metadata_path, 'r', encoding='utf-8') as f:
+                metadata = json.load(f)
+
+            query_vector = vectorizer.transform([topic_name]).toarray().astype('float32')
+            distances, indices = index.search(query_vector, 3)
+
+            for i in indices[0]:
+                if 0 <= i < len(metadata):
+                    chunk = metadata[i]
+                    curriculum_chunks.append({
+                        'text': chunk.get('text', ''),
+                        'source': chunk.get('source', 'curriculum'),
+                        'page': chunk.get('page', '')
+                    })
+        except Exception:
+            pass  # FAISS unavailable – continue with questions only
+
+        # ── Step 2: Extract curriculum content ──────────────────────────────
+        extracted = extract_content(curriculum_chunks)
+        if extracted['source_citation']:
+            source_citation = extracted['source_citation']
+
+        # ── Step 3: Generate questions ───────────────────────────────────────
+        questions = generate_questions(topic_name, count=4, difficulty=difficulty)
+
+        # ── Step 4: Build HTML content ───────────────────────────────────────
+        html_parts = []
+
+        # Curriculum explanation section
+        if extracted['explanation']:
+            html_parts.append(
+                f'<div class="rag-explanation">'
+                f'<h3>Curriculum Overview</h3>'
+                f'<p>{extracted["explanation"]}</p>'
+                f'</div>'
+            )
+
+        # Key formulas
+        if extracted['formulas']:
+            formulas_html = ''.join(f'<li><code>{f}</code></li>' for f in extracted['formulas'])
+            html_parts.append(
+                f'<div class="rag-formulas">'
+                f'<h3>Key Formulas</h3>'
+                f'<ul>{formulas_html}</ul>'
+                f'</div>'
+            )
+
+        # Curriculum examples
+        if extracted['examples']:
+            examples_html = ''.join(f'<li>{e}</li>' for e in extracted['examples'])
+            html_parts.append(
+                f'<div class="rag-examples">'
+                f'<h3>Curriculum Examples</h3>'
+                f'<ul>{examples_html}</ul>'
+                f'</div>'
+            )
+
+        # Practice questions
+        questions_html = []
+        for idx, q in enumerate(questions, 1):
+            opts_html = ''.join(
+                f'<li data-idx="{i}" class="rag-option">{chr(65+i)}. {opt}</li>'
+                for i, opt in enumerate(q['options'])
+            )
+            questions_html.append(
+                f'<div class="rag-question" data-correct="{q["correct_index"]}">'
+                f'<p><strong>Q{idx}.</strong> {q["question"]}</p>'
+                f'<ul class="rag-options">{opts_html}</ul>'
+                f'<div class="rag-answer" style="display:none">'
+                f'<strong>Answer: {q["correct_letter"]}</strong> — {q["explanation"]}'
+                f'</div>'
+                f'</div>'
+            )
+
+        html_parts.append(
+            f'<div class="rag-questions">'
+            f'<h3>Practice Questions</h3>'
+            + ''.join(questions_html) +
+            f'</div>'
+        )
+
+        content_html = '\n'.join(html_parts)
+
+        # ── Step 5: Look up topic_id ─────────────────────────────────────────
+        conn = get_db_connection()
+        cursor = conn.cursor()
+
+        cursor.execute(
+            "SELECT topic_id FROM topics WHERE LOWER(topic_name) LIKE %s LIMIT 1",
+            (f'%{topic_name.lower()}%',)
+        )
+        topic_row = cursor.fetchone()
+        if not topic_row:
+            # Fallback: use first topic
+            cursor.execute("SELECT topic_id FROM topics LIMIT 1")
+            topic_row = cursor.fetchone()
+
+        if not topic_row:
+            cursor.close()
+            conn.close()
+            return jsonify({"error": "No topics found in database"}), 500
+
+        topic_id = topic_row[0]
+
+        # ── Step 6: Save to material table ───────────────────────────────────
+        cursor.execute("""
+            INSERT INTO material (topic_id, title, content, source_citation,
+                                  approval_status, generated_date)
+            VALUES (%s, %s, %s, %s, 'Pending', NOW())
+        """, (topic_id, f"Practice: {topic_name}", content_html, source_citation))
+
+        material_id = cursor.lastrowid
+        conn.commit()
+        cursor.close()
+        conn.close()
+
+        return jsonify({
+            "material_id": material_id,
+            "title": f"Practice: {topic_name}",
+            "source_citation": source_citation,
+            "questions_count": len(questions),
+            "preview": content_html[:500],
+            "message": "Material generated and sent for teacher approval"
+        }), 201
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
 
 @app.route('/api/curriculum/search/faiss', methods=['POST'])
 def search_curriculum_faiss():
