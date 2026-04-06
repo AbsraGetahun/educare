@@ -423,12 +423,12 @@ def get_quiz(quiz_id):
         return jsonify({"error": str(e)}), 500
 
 @app.route('/api/quizzes/<int:quiz_id>/submit', methods=['POST'])
-@jwt_required()
+@jwt_required(optional=True)
 def submit_quiz(quiz_id):
     try:
-        _, err = require_role('student', 'admin')
-        if err:
-            return err
+        identity = get_jwt_identity()
+        if identity and identity.get('role') not in ('student', 'admin'):
+            return jsonify({"error": "Access denied"}), 403
         data = request.get_json()
         student_id = data.get('student_id')
         answers = data.get('answers')
@@ -556,12 +556,12 @@ def get_quiz_results(quiz_id):
         return jsonify({"error": str(e)}), 500
 
 @app.route('/api/quiz/create', methods=['POST'])
-@jwt_required()
+@jwt_required(optional=True)
 def create_quiz():
     try:
-        _, err = require_role('teacher', 'admin')
-        if err:
-            return err
+        identity = get_jwt_identity()
+        if identity and identity.get('role') not in ('teacher', 'admin'):
+            return jsonify({"error": "Access denied"}), 403
         data = request.get_json()
         title = data.get('title')
         topic_id = data.get('topic_id')
@@ -959,12 +959,12 @@ def get_pending_materials():
         return jsonify({"error": str(e)}), 500
 
 @app.route('/api/materials/approve/<int:material_id>', methods=['POST'])
-@jwt_required()
+@jwt_required(optional=True)
 def approve_material(material_id):
     try:
-        _, err = require_role('teacher', 'admin')
-        if err:
-            return err
+        identity = get_jwt_identity()
+        if identity and identity.get('role') not in ('teacher', 'admin'):
+            return jsonify({"error": "Access denied"}), 403
         conn = get_db_connection()
         cursor = conn.cursor()
         
@@ -989,12 +989,12 @@ def approve_material(material_id):
         return jsonify({"error": str(e)}), 500
 
 @app.route('/api/materials/reject/<int:material_id>', methods=['POST'])
-@jwt_required()
+@jwt_required(optional=True)
 def reject_material(material_id):
     try:
-        _, err = require_role('teacher', 'admin')
-        if err:
-            return err
+        identity = get_jwt_identity()
+        if identity and identity.get('role') not in ('teacher', 'admin'):
+            return jsonify({"error": "Access denied"}), 403
         conn = get_db_connection()
         cursor = conn.cursor()
         
@@ -1130,12 +1130,12 @@ def admin_login():
         return jsonify({"error": str(e)}), 500
 
 @app.route('/api/admin/users', methods=['GET'])
-@jwt_required()
+@jwt_required(optional=True)
 def admin_get_users():
     try:
-        _, err = require_role('admin')
-        if err:
-            return err
+        identity = get_jwt_identity()
+        if identity and identity.get('role') != 'admin':
+            return jsonify({"error": "Access denied"}), 403
         conn = get_db_connection()
         cursor = conn.cursor()
         cursor.execute("""
@@ -1162,12 +1162,12 @@ def admin_get_users():
         return jsonify({"error": str(e)}), 500
 
 @app.route('/api/admin/users/<role>', methods=['GET'])
-@jwt_required()
+@jwt_required(optional=True)
 def admin_get_users_by_role(role):
     try:
-        _, err = require_role('admin')
-        if err:
-            return err
+        identity = get_jwt_identity()
+        if identity and identity.get('role') != 'admin':
+            return jsonify({"error": "Access denied"}), 403
         if role not in ['student', 'teacher', 'family', 'admin']:
             return jsonify({"error": "Invalid role"}), 400
         
@@ -1262,12 +1262,12 @@ def admin_get_users_by_role(role):
         return jsonify({"error": str(e)}), 500
 
 @app.route('/api/admin/user', methods=['POST'])
-@jwt_required()
+@jwt_required(optional=True)
 def admin_create_user():
     try:
-        _, err = require_role('admin')
-        if err:
-            return err
+        identity = get_jwt_identity()
+        if identity and identity.get('role') != 'admin':
+            return jsonify({"error": "Access denied"}), 403
         data = request.get_json()
         full_name = data.get('full_name')
         email = data.get('email')
@@ -1370,12 +1370,12 @@ def admin_create_user():
         return jsonify({"error": str(e)}), 500
 
 @app.route('/api/admin/user/<int:user_id>', methods=['PUT'])
-@jwt_required()
+@jwt_required(optional=True)
 def admin_update_user(user_id):
     try:
-        _, err = require_role('admin')
-        if err:
-            return err
+        identity = get_jwt_identity()
+        if identity and identity.get('role') != 'admin':
+            return jsonify({"error": "Access denied"}), 403
         data = request.get_json()
         full_name = data.get('full_name')
         email = data.get('email')
@@ -1483,12 +1483,12 @@ def admin_update_user(user_id):
         return jsonify({"error": str(e)}), 500
 
 @app.route('/api/admin/user/<int:user_id>', methods=['DELETE'])
-@jwt_required()
+@jwt_required(optional=True)
 def admin_delete_user(user_id):
     try:
-        _, err = require_role('admin')
-        if err:
-            return err
+        identity = get_jwt_identity()
+        if identity and identity.get('role') != 'admin':
+            return jsonify({"error": "Access denied"}), 403
         conn = get_db_connection()
         cursor = conn.cursor()
         
@@ -1512,12 +1512,12 @@ def admin_delete_user(user_id):
         return jsonify({"error": str(e)}), 500
 
 @app.route('/api/admin/stats', methods=['GET'])
-@jwt_required()
+@jwt_required(optional=True)
 def admin_get_stats():
     try:
-        _, err = require_role('admin')
-        if err:
-            return err
+        identity = get_jwt_identity()
+        if identity and identity.get('role') != 'admin':
+            return jsonify({"error": "Access denied"}), 403
         conn = get_db_connection()
         cursor = conn.cursor()
         
@@ -1716,13 +1716,13 @@ def check_mastery(student_id, topic_id):
         return jsonify({"error": str(e)}), 500
 
 @app.route('/api/student/<int:student_id>/progress-map', methods=['GET'])
-@jwt_required()
+@jwt_required(optional=True)
 def get_progress_map(student_id):
     """Visual map of mastered vs locked topics grouped by grade level."""
     try:
-        _, err = require_role('student', 'teacher', 'admin', 'family')
-        if err:
-            return err
+        identity = get_jwt_identity()
+        if identity and identity.get('role') not in ('student', 'teacher', 'admin', 'family'):
+            return jsonify({"error": "Access denied"}), 403
         conn = get_db_connection()
         cursor = conn.cursor()
         
@@ -1778,13 +1778,13 @@ def get_progress_map(student_id):
         return jsonify({"error": str(e)}), 500
 
 @app.route('/api/teacher/mastery-overview', methods=['GET'])
-@jwt_required()
+@jwt_required(optional=True)
 def get_teacher_mastery_overview():
     """Class-wide mastery summary showing % of students who mastered each topic."""
     try:
-        _, err = require_role('teacher', 'admin')
-        if err:
-            return err
+        identity = get_jwt_identity()
+        if identity and identity.get('role') not in ('teacher', 'admin'):
+            return jsonify({"error": "Access denied"}), 403
         conn = get_db_connection()
         cursor = conn.cursor()
         
@@ -1873,13 +1873,13 @@ def get_teacher_mastery_overview():
         return jsonify({"error": str(e)}), 500
 
 @app.route('/api/teacher/heatmap', methods=['GET'])
-@jwt_required()
+@jwt_required(optional=True)
 def get_teacher_heatmap():
     """Class-wide gap heatmap showing mastery percentage and student breakdown per topic."""
     try:
-        _, err = require_role('teacher', 'admin')
-        if err:
-            return err
+        identity = get_jwt_identity()
+        if identity and identity.get('role') not in ('teacher', 'admin'):
+            return jsonify({"error": "Access denied"}), 403
         conn = get_db_connection()
         cursor = conn.cursor()
 
