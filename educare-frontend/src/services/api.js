@@ -263,4 +263,14 @@ export const getHeatmap = async () => {
   return response.data;
 };
 
+// RAG Material Generation API
+export const generatePracticeMaterial = async (topicName, studentId, difficulty = 'medium') => {
+  const response = await api.post('/api/materials/generate', {
+    topic_name: topicName,
+    student_id: studentId,
+    difficulty
+  });
+  return response.data;
+};
+
 export default api;
