@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { getQuizzes, getStudents, getStudentGaps, getQuizResults, createQuiz, getPendingMaterials, approveMaterial, rejectMaterial, getTeacherMasteryOverview, getHeatmap, searchCurriculum } from '../services/api';
+import { getQuizzes, getStudents, getStudentGaps, getQuizResults, createQuiz, getPendingMaterials, approveMaterial, rejectMaterial, getTeacherMasteryOverview, getHeatmap, searchCurriculum, generatePracticeMaterial } from '../services/api';
 
 function TeacherDashboard() {
   const [activeTab, setActiveTab] = useState('overview');
@@ -29,6 +29,10 @@ function TeacherDashboard() {
   const [searchQuery, setSearchQuery] = useState('');
   const [searchResults, setSearchResults] = useState([]);
   const [isLoading, setIsLoading] = useState(false);
+  const [generateTopic, setGenerateTopic] = useState('');
+  const [generateDifficulty, setGenerateDifficulty] = useState('medium');
+  const [generateStatus, setGenerateStatus] = useState('');
+  const [isGenerating, setIsGenerating] = useState(false);
   const [newQuiz, setNewQuiz] = useState({
     title: '',
     topic_id: '',
@@ -165,6 +169,23 @@ function TeacherDashboard() {
       setSearchResults([]);
     } finally {
       setIsLoading(false);
+    }
+  };
+
+  const handleGenerateMaterial = async () => {
+    if (!generateTopic || !selectedStudent) return;
+    setIsGenerating(true);
+    setGenerateStatus('');
+    try {
+      await generatePracticeMaterial(generateTopic, selectedStudent.user_id, generateDifficulty);
+      setGenerateStatus('success');
+      // Refresh pending materials count
+      const materialsData = await getPendingMaterials();
+      setPendingMaterials(materialsData.materials || []);
+    } catch (err) {
+      setGenerateStatus('error');
+    } finally {
+      setIsGenerating(false);
     }
   };
 
@@ -721,6 +742,56 @@ function TeacherDashboard() {
                         No skill gaps detected for this student
                       </div>
                     )}
+
+                    {/* Generate Practice Material */}
+                    <div className="mt-6 border-t pt-4">
+                      <h4 className="font-semibold mb-3">Generate Practice Material</h4>
+                      <div className="flex flex-wrap gap-2 items-end">
+                        <div className="flex-1 min-w-40">
+                          <label className="block text-xs text-gray-500 mb-1">Topic</label>
+                          <select
+                            value={generateTopic}
+                            onChange={(e) => { setGenerateTopic(e.target.value); setGenerateStatus(''); }}
+                            className="w-full border rounded px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                          >
+                            <option value="">Select weak topic...</option>
+                            {studentGaps.length > 0
+                              ? studentGaps.map((g) => (
+                                  <option key={g.topic_id} value={g.topic_name}>{g.topic_name}</option>
+                                ))
+                              : ['Algebra', 'Limits', 'Integration'].map((t) => (
+                                  <option key={t} value={t}>{t}</option>
+                                ))
+                            }
+                          </select>
+                        </div>
+                        <div>
+                          <label className="block text-xs text-gray-500 mb-1">Difficulty</label>
+                          <select
+                            value={generateDifficulty}
+                            onChange={(e) => setGenerateDifficulty(e.target.value)}
+                            className="border rounded px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                          >
+                            <option value="easy">Easy</option>
+                            <option value="medium">Medium</option>
+                            <option value="hard">Hard</option>
+                          </select>
+                        </div>
+                        <button
+                          onClick={handleGenerateMaterial}
+                          disabled={!generateTopic || isGenerating}
+                          className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed text-sm transition"
+                        >
+                          {isGenerating ? 'Generating from curriculum...' : 'Generate Practice Material'}
+                        </button>
+                      </div>
+                      {generateStatus === 'success' && (
+                        <p className="mt-2 text-sm text-green-600">Material created and sent for approval.</p>
+                      )}
+                      {generateStatus === 'error' && (
+                        <p className="mt-2 text-sm text-red-600">Failed to generate material. Please try again.</p>
+                      )}
+                    </div>
                   </div>
                 ) : (
                   <div className="text-gray-500 text-center py-12">
@@ -800,7 +871,10 @@ function TeacherDashboard() {
                       </div>
                     </div>
                     <div className="bg-gray-50 rounded p-4 mb-4">
-                      <p className="text-gray-700 whitespace-pre-wrap">{material.content}</p>
+                      <div
+                        className="text-gray-700 prose prose-sm max-w-none"
+                        dangerouslySetInnerHTML={{ __html: material.content }}
+                      />
                     </div>
                     {material.source_citation && (
                       <p className="text-sm text-gray-500 italic">Source: {material.source_citation}</p>
