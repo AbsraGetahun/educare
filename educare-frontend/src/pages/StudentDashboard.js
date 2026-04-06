@@ -2,6 +2,121 @@ import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { getQuizzes, getApprovedMaterials, getProgressMap, getAvailableTopics, getStudentRecommendations, getCompletedQuizzes } from '../services/api';
 
+// ── MaterialCard: renders RAG-generated HTML material with interactive questions ──
+function MaterialCard({ material }) {
+  const [revealedAnswers, setRevealedAnswers] = useState({});
+  const [completed, setCompleted] = useState(false);
+
+  const toggleAnswer = (qIdx) => {
+    setRevealedAnswers((prev) => ({ ...prev, [qIdx]: !prev[qIdx] }));
+  };
+
+  // Parse questions from HTML content
+  const parseQuestions = (html) => {
+    const parser = new DOMParser();
+    const doc = parser.parseFromString(html, 'text/html');
+    const qDivs = doc.querySelectorAll('.rag-question');
+    return Array.from(qDivs).map((div, i) => {
+      const correctIdx = parseInt(div.getAttribute('data-correct') || '0');
+      const questionText = div.querySelector('p')?.textContent || '';
+      const options = Array.from(div.querySelectorAll('.rag-option')).map((li) => li.textContent);
+      const explanation = div.querySelector('.rag-answer')?.textContent || '';
+      return { idx: i, questionText, options, correctIdx, explanation };
+    });
+  };
+
+  // Extract non-question sections as plain HTML
+  const getContextHtml = (html) => {
+    const parser = new DOMParser();
+    const doc = parser.parseFromString(html, 'text/html');
+    doc.querySelectorAll('.rag-questions').forEach((el) => el.remove());
+    return doc.body.innerHTML;
+  };
+
+  const questions = parseQuestions(material.content || '');
+  const contextHtml = getContextHtml(material.content || '');
+
+  return (
+    <div className={`bg-white rounded-lg shadow-sm border ${completed ? 'border-green-300' : 'border-gray-200'} overflow-hidden`}>
+      {/* Header */}
+      <div className="p-4 border-b border-gray-100">
+        <div className="flex justify-between items-start">
+          <div>
+            <h3 className="text-sm font-semibold text-gray-900">{material.title}</h3>
+            <div className="flex items-center gap-2 mt-1">
+              <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-blue-100 text-blue-700 font-medium">
+                {material.topic_name}
+              </span>
+              <span className="text-[10px] text-gray-400">
+                {new Date(material.generated_date).toLocaleDateString()}
+              </span>
+              {completed && (
+                <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-green-100 text-green-700 font-medium">
+                  ✓ Completed
+                </span>
+              )}
+            </div>
+          </div>
+          {!completed && (
+            <button
+              onClick={() => setCompleted(true)}
+              className="text-xs px-3 py-1.5 bg-green-600 text-white rounded-md hover:bg-green-700 transition flex-shrink-0 ml-2"
+            >
+              Mark as Completed
+            </button>
+          )}
+        </div>
+        {material.source_citation && (
+          <p className="text-[10px] text-gray-400 italic mt-1">Source: {material.source_citation}</p>
+        )}
+      </div>
+
+      {/* Curriculum context (explanation, formulas, examples) */}
+      {contextHtml && contextHtml.trim() !== '' && (
+        <div
+          className="p-4 border-b border-gray-100 bg-blue-50 text-sm text-gray-700 rag-content"
+          dangerouslySetInnerHTML={{ __html: contextHtml }}
+        />
+      )}
+
+      {/* Questions */}
+      {questions.length > 0 && (
+        <div className="p-4 space-y-4">
+          <h4 className="text-sm font-semibold text-gray-800">Practice Questions</h4>
+          {questions.map((q) => (
+            <div key={q.idx} className="border border-gray-200 rounded-lg p-3">
+              <p className="text-sm font-medium text-gray-800 mb-2">{q.questionText}</p>
+              <ul className="space-y-1 mb-2">
+                {q.options.map((opt, oIdx) => (
+                  <li
+                    key={oIdx}
+                    className={`text-xs px-2 py-1 rounded ${
+                      revealedAnswers[q.idx] && oIdx === q.correctIdx
+                        ? 'bg-green-100 text-green-800 font-medium'
+                        : 'text-gray-600'
+                    }`}
+                  >
+                    {opt}
+                  </li>
+                ))}
+              </ul>
+              {revealedAnswers[q.idx] && q.explanation && (
+                <p className="text-xs text-blue-700 bg-blue-50 rounded p-2 mt-1">{q.explanation}</p>
+              )}
+              <button
+                onClick={() => toggleAnswer(q.idx)}
+                className="text-xs text-blue-600 hover:text-blue-800 mt-1 underline"
+              >
+                {revealedAnswers[q.idx] ? 'Hide Answer' : 'Show Answer'}
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function StudentDashboard() {
   const [quizzes, setQuizzes] = useState([]);
   const [materials, setMaterials] = useState([]);
@@ -376,30 +491,15 @@ function StudentDashboard() {
           <div>
             <h2 className="text-xl font-bold text-gray-900 mb-3">Study Materials</h2>
             {materials.length > 0 ? (
-              <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-4">
+              <div className="space-y-6">
                 {materials.map((material) => (
-                  <div key={material.material_id} className="bg-white rounded-lg shadow-sm p-4">
-                    <h3 className="text-sm font-semibold text-gray-900 mb-1">{material.title}</h3>
-                    <div className="flex items-center gap-2 mb-2">
-                      <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-blue-100 text-blue-700 font-medium">
-                        {material.topic_name}
-                      </span>
-                      <span className="text-[10px] text-gray-400">
-                        {new Date(material.generated_date).toLocaleDateString()}
-                      </span>
-                    </div>
-                    <div className="bg-gray-50 rounded-md p-3 mb-2 max-h-40 overflow-y-auto">
-                      <p className="text-xs text-gray-700 whitespace-pre-wrap leading-relaxed">{material.content}</p>
-                    </div>
-                    {material.source_citation && (
-                      <p className="text-[10px] text-gray-400 italic">Source: {material.source_citation}</p>
-                    )}
-                  </div>
+                  <MaterialCard key={material.material_id} material={material} />
                 ))}
               </div>
             ) : (
               <div className="bg-white rounded-lg shadow-sm p-8 text-center">
                 <p className="text-gray-400 text-sm">No study materials available</p>
+                <p className="text-gray-400 text-xs mt-1">Your teacher will generate materials based on your weak topics.</p>
               </div>
             )}
           </div>
