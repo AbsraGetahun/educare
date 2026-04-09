@@ -44,7 +44,16 @@ function TeacherDashboard() {
     title: '',
     topic_id: '',
     total_marks: '',
-    time_limit: '30'
+    time_limit: '30',
+    questions: []
+  });
+  const [newQuestion, setNewQuestion] = useState({
+    question_text: '',
+    option_a: '',
+    option_b: '',
+    option_c: '',
+    option_d: '',
+    correct_answer: 'A'
   });
   const navigate = useNavigate();
   const fullName = localStorage.getItem('full_name');
@@ -102,20 +111,57 @@ function TeacherDashboard() {
 
   const handleCreateQuiz = async (e) => {
     e.preventDefault();
-    if (!quizForm.title || !quizForm.topic_id || !quizForm.total_marks) {
-      alert('Please fill all required fields');
+    if (!quizForm.title || !quizForm.topic_id) {
+      alert('Please fill title and select a topic');
       return;
     }
 
     try {
-      await createQuiz(quizForm);
-      alert('Quiz created successfully!');
+      const payload = {
+        title: quizForm.title,
+        topic_id: parseInt(quizForm.topic_id),
+        total_marks: quizForm.total_marks || quizForm.questions.length,
+        time_limit: quizForm.time_limit || 30,
+        questions: quizForm.questions
+      };
+      const result = await createQuiz(payload);
+      if (result.quiz_id) {
+        alert(`Quiz created successfully with ${quizForm.questions.length} questions!`);
+      } else {
+        alert('Quiz created but may have errors: ' + (result.error || ''));
+      }
       setShowCreateQuiz(false);
-      setQuizForm({ title: '', topic_id: '', total_marks: '', time_limit: '30' });
+      setQuizForm({ title: '', topic_id: '', total_marks: '', time_limit: '30', questions: [] });
       fetchData();
     } catch (err) {
       alert('Failed to create quiz');
     }
+  };
+
+  const handleAddQuestion = () => {
+    if (!newQuestion.question_text || !newQuestion.option_a || !newQuestion.option_b) {
+      alert('Please fill in question text and at least two options');
+      return;
+    }
+    setQuizForm({
+      ...quizForm,
+      questions: [...quizForm.questions, { ...newQuestion }]
+    });
+    setNewQuestion({
+      question_text: '',
+      option_a: '',
+      option_b: '',
+      option_c: '',
+      option_d: '',
+      correct_answer: 'A'
+    });
+  };
+
+  const handleRemoveQuestion = (index) => {
+    setQuizForm({
+      ...quizForm,
+      questions: quizForm.questions.filter((_, i) => i !== index)
+    });
   };
 
   const handleApproveMaterial = async (materialId) => {
@@ -905,62 +951,161 @@ function TeacherDashboard() {
 
       {/* Create Quiz Modal */}
       {showCreateQuiz && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-          <div className="bg-white rounded-lg shadow-xl w-full max-w-md p-4" style={{ backgroundColor: '#ffffff' }}>
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-lg shadow-xl w-full max-w-2xl max-h-[85vh] overflow-y-auto p-4" style={{ backgroundColor: '#ffffff' }}>
             <h2 className="text-lg font-bold mb-3">Create New Quiz</h2>
             <form onSubmit={handleCreateQuiz}>
-              <div className="mb-3">
-                <label className="block text-gray-700 text-sm font-medium mb-1">Quiz Title</label>
-                <input
-                  type="text"
-                  value={quizForm.title}
-                  onChange={(e) => setQuizForm({ ...quizForm, title: e.target.value })}
-                  className="w-full px-2 py-1.5 text-sm border rounded focus:outline-none focus:ring-2"
-                  style={{ borderColor: '#d1d5db' }}
-                  required
-                />
+              <div className="grid grid-cols-2 gap-3 mb-3">
+                <div>
+                  <label className="block text-gray-700 text-sm font-medium mb-1">Quiz Title</label>
+                  <input
+                    type="text"
+                    value={quizForm.title}
+                    onChange={(e) => setQuizForm({ ...quizForm, title: e.target.value })}
+                    className="w-full px-2 py-1.5 text-sm border rounded focus:outline-none focus:ring-2"
+                    style={{ borderColor: '#d1d5db' }}
+                    required
+                  />
+                </div>
+                <div>
+                  <label className="block text-gray-700 text-sm font-medium mb-1">Topic</label>
+                  <select
+                    value={quizForm.topic_id}
+                    onChange={(e) => setQuizForm({ ...quizForm, topic_id: e.target.value })}
+                    className="w-full px-2 py-1.5 text-sm border rounded focus:outline-none focus:ring-2"
+                    style={{ borderColor: '#d1d5db' }}
+                    required
+                  >
+                    <option value="">Select Topic</option>
+                    <option value="1">Algebra</option>
+                    <option value="2">Limits</option>
+                    <option value="3">Integration</option>
+                  </select>
+                </div>
               </div>
               
-              <div className="mb-3">
-                <label className="block text-gray-700 text-sm font-medium mb-1">Topic ID</label>
-                <input
-                  type="number"
-                  value={quizForm.topic_id}
-                  onChange={(e) => setQuizForm({ ...quizForm, topic_id: e.target.value })}
-                  className="w-full px-2 py-1.5 text-sm border rounded focus:outline-none focus:ring-2"
-                  style={{ borderColor: '#d1d5db' }}
-                  placeholder="1 for Algebra, 2 for Limits, 3 for Integration"
-                  required
-                />
+              <div className="grid grid-cols-2 gap-3 mb-4">
+                <div>
+                  <label className="block text-gray-700 text-sm font-medium mb-1">Time Limit (minutes)</label>
+                  <input
+                    type="number"
+                    value={quizForm.time_limit}
+                    onChange={(e) => setQuizForm({ ...quizForm, time_limit: e.target.value })}
+                    className="w-full px-2 py-1.5 text-sm border rounded focus:outline-none focus:ring-2"
+                    style={{ borderColor: '#d1d5db' }}
+                  />
+                </div>
+                <div className="flex items-center">
+                  <span className="text-sm text-gray-600">{quizForm.questions.length} questions added</span>
+                </div>
               </div>
-              
-              <div className="mb-3">
-                <label className="block text-gray-700 text-sm font-medium mb-1">Total Marks</label>
-                <input
-                  type="number"
-                  value={quizForm.total_marks}
-                  onChange={(e) => setQuizForm({ ...quizForm, total_marks: e.target.value })}
-                  className="w-full px-2 py-1.5 text-sm border rounded focus:outline-none focus:ring-2"
-                  style={{ borderColor: '#d1d5db' }}
-                  required
-                />
+
+              {/* Add Question Section */}
+              <div className="border rounded-lg p-3 mb-4" style={{ borderColor: '#e5e7eb' }}>
+                <h3 className="text-sm font-semibold mb-2">Add Question</h3>
+                <div className="mb-2">
+                  <input
+                    type="text"
+                    placeholder="Enter question text..."
+                    value={newQuestion.question_text}
+                    onChange={(e) => setNewQuestion({ ...newQuestion, question_text: e.target.value })}
+                    className="w-full px-2 py-1.5 text-sm border rounded"
+                    style={{ borderColor: '#d1d5db' }}
+                  />
+                </div>
+                <div className="grid grid-cols-2 gap-2 mb-2">
+                  <div className="flex items-center gap-1">
+                    <span className="text-xs text-gray-500 w-4">A:</span>
+                    <input
+                      type="text"
+                      placeholder="Option A"
+                      value={newQuestion.option_a}
+                      onChange={(e) => setNewQuestion({ ...newQuestion, option_a: e.target.value })}
+                      className="flex-1 px-2 py-1 text-xs border rounded"
+                    />
+                  </div>
+                  <div className="flex items-center gap-1">
+                    <span className="text-xs text-gray-500 w-4">B:</span>
+                    <input
+                      type="text"
+                      placeholder="Option B"
+                      value={newQuestion.option_b}
+                      onChange={(e) => setNewQuestion({ ...newQuestion, option_b: e.target.value })}
+                      className="flex-1 px-2 py-1 text-xs border rounded"
+                    />
+                  </div>
+                  <div className="flex items-center gap-1">
+                    <span className="text-xs text-gray-500 w-4">C:</span>
+                    <input
+                      type="text"
+                      placeholder="Option C"
+                      value={newQuestion.option_c}
+                      onChange={(e) => setNewQuestion({ ...newQuestion, option_c: e.target.value })}
+                      className="flex-1 px-2 py-1 text-xs border rounded"
+                    />
+                  </div>
+                  <div className="flex items-center gap-1">
+                    <span className="text-xs text-gray-500 w-4">D:</span>
+                    <input
+                      type="text"
+                      placeholder="Option D"
+                      value={newQuestion.option_d}
+                      onChange={(e) => setNewQuestion({ ...newQuestion, option_d: e.target.value })}
+                      className="flex-1 px-2 py-1 text-xs border rounded"
+                    />
+                  </div>
+                </div>
+                <div className="flex items-center gap-2 mb-2">
+                  <span className="text-xs text-gray-600">Correct Answer:</span>
+                  <select
+                    value={newQuestion.correct_answer}
+                    onChange={(e) => setNewQuestion({ ...newQuestion, correct_answer: e.target.value })}
+                    className="px-2 py-1 text-xs border rounded"
+                  >
+                    <option value="A">A</option>
+                    <option value="B">B</option>
+                    <option value="C">C</option>
+                    <option value="D">D</option>
+                  </select>
+                </div>
+                <button
+                  type="button"
+                  onClick={handleAddQuestion}
+                  className="px-3 py-1.5 text-xs rounded text-white"
+                  style={{ backgroundColor: '#10b981' }}
+                >
+                  + Add Question
+                </button>
               </div>
-              
-              <div className="mb-4">
-                <label className="block text-gray-700 text-sm font-medium mb-1">Time Limit (minutes)</label>
-                <input
-                  type="number"
-                  value={quizForm.time_limit}
-                  onChange={(e) => setQuizForm({ ...quizForm, time_limit: e.target.value })}
-                  className="w-full px-2 py-1.5 text-sm border rounded focus:outline-none focus:ring-2"
-                  style={{ borderColor: '#d1d5db' }}
-                />
-              </div>
+
+              {/* Questions List */}
+              {quizForm.questions.length > 0 && (
+                <div className="mb-4">
+                  <h3 className="text-sm font-semibold mb-2">Questions ({quizForm.questions.length})</h3>
+                  <div className="space-y-2 max-h-40 overflow-y-auto">
+                    {quizForm.questions.map((q, idx) => (
+                      <div key={idx} className="flex items-start justify-between p-2 rounded" style={{ backgroundColor: '#f9fafb' }}>
+                        <div className="flex-1">
+                          <p className="text-xs font-medium">{idx + 1}. {q.question_text.substring(0, 60)}...</p>
+                          <p className="text-xs text-gray-500">Answer: {q.correct_answer}</p>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => handleRemoveQuestion(idx)}
+                          className="text-red-500 text-xs hover:text-red-700 ml-2"
+                        >
+                          ✕
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
               
               <div className="flex justify-end gap-2">
                 <button
                   type="button"
-                  onClick={() => setShowCreateQuiz(false)}
+                  onClick={() => { setShowCreateQuiz(false); setQuizForm({ title: '', topic_id: '', total_marks: '', time_limit: '30', questions: [] }); }}
                   className="px-3 py-1.5 text-sm rounded-md hover:bg-gray-200"
                   style={{ backgroundColor: '#e5e7eb' }}
                 >
@@ -971,7 +1116,7 @@ function TeacherDashboard() {
                   className="px-3 py-1.5 text-sm rounded-md text-white"
                   style={{ backgroundColor: '#2563eb' }}
                 >
-                  Create Quiz
+                  Create Quiz ({quizForm.questions.length} questions)
                 </button>
               </div>
             </form>
