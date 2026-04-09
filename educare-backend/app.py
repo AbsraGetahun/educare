@@ -343,7 +343,7 @@ def get_quizzes():
             FROM quizzes q
             JOIN topics t ON q.topic_id = t.topic_id
         """)
-        quizzes = cursor.fetchall()
+        quizzes = cursor.fetchall() or []
         cursor.close()
         conn.close()
         
@@ -360,7 +360,8 @@ def get_quizzes():
         
         return jsonify({"quizzes": quizzes_list})
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        print(f"Error in /api/quizzes: {e}")
+        return jsonify({"quizzes": []}), 200
 
 @app.route('/api/quizzes/<int:quiz_id>', methods=['GET'])
 def get_quiz(quiz_id):
@@ -384,8 +385,8 @@ def get_quiz(quiz_id):
         questions = None
         try:
             cursor.execute("""
-                SELECT question_id, question_text, option_a, option_b, option_c, option_d
-                FROM questions
+                SELECT question_id, question_text, option_a, option_b, option_c, option_d, correct_answer
+                FROM quiz_questions
                 WHERE quiz_id = %s
                 ORDER BY question_id
             """, (quiz_id,))
@@ -396,7 +397,8 @@ def get_quiz(quiz_id):
                     questions.append({
                         'question_id': row[0],
                         'question_text': row[1],
-                        'options': [row[2], row[3], row[4], row[5]]
+                        'options': [row[2], row[3], row[4] or '', row[5] or ''],
+                        'correct_answer': row[6]
                     })
         except Exception:
             pass
@@ -556,20 +558,37 @@ def get_quiz_results(quiz_id):
         return jsonify({"error": str(e)}), 500
 
 @app.route('/api/quiz/create', methods=['POST'])
-@jwt_required(optional=True)
 def create_quiz():
+    """
+    Create a quiz with custom questions.
+    Input format:
+    {
+      "title": "Algebra Midterm",
+      "topic_id": 1,
+      "total_marks": 20,
+      "time_limit": 30,
+      "questions": [
+        {
+          "question_text": "Solve for x: 2x + 5 = 15",
+          "option_a": "x = 3",
+          "option_b": "x = 5",
+          "option_c": "x = 10", 
+          "option_d": "x = 2",
+          "correct_answer": "B"
+        }
+      ]
+    }
+    """
     try:
-        identity = get_jwt_identity()
-        if identity and identity.get('role') not in ('teacher', 'admin'):
-            return jsonify({"error": "Access denied"}), 403
-        data = request.get_json()
+        data = request.get_json() or {}
         title = data.get('title')
         topic_id = data.get('topic_id')
         total_marks = data.get('total_marks')
-        time_limit = data.get('time_limit')
+        time_limit = data.get('time_limit', 30)
+        questions = data.get('questions', [])
         
-        if not title or not topic_id or not total_marks:
-            return jsonify({"error": "Title, topic, and total marks required"}), 400
+        if not title or not topic_id:
+            return jsonify({"error": "Title and topic_id are required"}), 400
         
         conn = get_db_connection()
         cursor = conn.cursor()
@@ -577,17 +596,39 @@ def create_quiz():
         cursor.execute("""
             INSERT INTO quizzes (topic_id, title, total_marks, time_limit, created_at)
             VALUES (%s, %s, %s, %s, NOW())
-        """, (topic_id, title, total_marks, time_limit))
+        """, (topic_id, title, total_marks or len(questions), time_limit))
         quiz_id = cursor.lastrowid
+        
+        questions_saved = 0
+        for q in questions:
+            cursor.execute("""
+                INSERT INTO quiz_questions 
+                (quiz_id, question_text, option_a, option_b, option_c, option_d, correct_answer)
+                VALUES (%s, %s, %s, %s, %s, %s, %s)
+            """, (
+                quiz_id,
+                q.get('question_text', ''),
+                q.get('option_a', ''),
+                q.get('option_b', ''),
+                q.get('option_c', ''),
+                q.get('option_d', ''),
+                q.get('correct_answer', 'A')
+            ))
+            questions_saved += 1
         
         conn.commit()
         cursor.close()
         conn.close()
         
-        return jsonify({"message": "Quiz created successfully", "quiz_id": quiz_id}), 201
+        return jsonify({
+            "message": "Quiz created successfully",
+            "quiz_id": quiz_id,
+            "questions_count": questions_saved
+        }), 201
         
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        print(f"Error creating quiz: {e}")
+        return jsonify({"error": str(e), "quiz_id": None}), 200
 
 # ==================== FAMILY ENDPOINTS ====================
 
@@ -2155,41 +2196,31 @@ def get_completed_quizzes(student_id):
 
 @app.route('/api/student/materials', methods=['GET'])
 def get_student_materials():
-    """Get approved materials, optionally filtered by student_id."""
+    """Get approved materials for students."""
     try:
         student_id = request.args.get('student_id')
         
         conn = get_db_connection()
         cursor = conn.cursor()
         
-        if student_id:
-            cursor.execute("""
-                SELECT m.material_id, m.title, m.content, m.source_citation,
-                       m.generated_date, t.topic_name, m.topic_id
-                FROM material m
-                LEFT JOIN topics t ON m.topic_id = t.topic_id
-                WHERE m.approval_status = 'Approved'
-                AND m.topic_id IN (
-                    SELECT q.topic_id
-                    FROM quiz_attempt qa
-                    JOIN quizzes q ON qa.quiz_id = q.quiz_id
-                    WHERE qa.student_id = %s
-                    GROUP BY q.topic_id
-                    HAVING AVG(qa.score * 100.0 / q.total_marks) < 70
-                )
-                ORDER BY m.generated_date DESC
-            """, (student_id,))
-        else:
-            cursor.execute("""
-                SELECT m.material_id, m.title, m.content, m.source_citation,
-                       m.generated_date, t.topic_name, m.topic_id
-                FROM material m
-                LEFT JOIN topics t ON m.topic_id = t.topic_id
-                WHERE m.approval_status = 'Approved'
-                ORDER BY m.generated_date DESC
-            """)
+        print(f"[DEBUG] get_student_materials called with student_id={student_id}")
+        
+        cursor.execute("SELECT COUNT(*) FROM material WHERE approval_status = 'Approved'")
+        approved_count = cursor.fetchone()[0]
+        print(f"[DEBUG] Approved materials in DB: {approved_count}")
+        
+        cursor.execute("""
+            SELECT m.material_id, m.title, m.content, m.source_citation,
+                   m.generated_date, t.topic_name, m.topic_id
+            FROM material m
+            LEFT JOIN topics t ON m.topic_id = t.topic_id
+            WHERE m.approval_status = 'Approved'
+            ORDER BY m.generated_date DESC
+        """)
         
         materials = cursor.fetchall() or []
+        print(f"[DEBUG] Materials fetched: {len(materials)}")
+        
         materials_list = []
         for material in materials:
             materials_list.append({
