@@ -80,16 +80,6 @@ export const getStudentGaps = async (studentId) => {
   return response.data;
 };
 
-export const getStudentRecommendations = async (studentId) => {
-  const response = await api.get(`/api/student/${studentId}/recommendations`);
-  return response.data;
-};
-
-export const getCompletedQuizzes = async (studentId) => {
-  const response = await api.get(`/api/student/${studentId}/completed-quizzes`);
-  return response.data;
-};
-
 // Family APIs
 export const getFamilyStudents = async () => {
   const response = await api.get('/api/family/students');
@@ -225,30 +215,75 @@ export const rejectMaterial = async (materialId) => {
 
 // Student Materials APIs
 export const getApprovedMaterials = async (studentId) => {
-  const params = studentId ? { student_id: studentId } : {};
-  const response = await api.get('/api/student/materials', { params });
-  return response.data;
+  try {
+    const params = studentId ? { student_id: studentId } : {};
+    const response = await api.get('/api/student/materials', { params });
+    return response.data;
+  } catch (err) {
+    console.error('Error fetching materials:', err);
+    return { materials: [] };
+  }
+};
+
+export const getStudentRecommendations = async (studentId) => {
+  try {
+    const response = await api.get(`/api/student/${studentId}/recommendations`);
+    return response.data;
+  } catch (err) {
+    console.error('Error fetching recommendations:', err);
+    return { recommendations: [] };
+  }
+};
+
+export const getCompletedQuizzes = async (studentId) => {
+  try {
+    const response = await api.get(`/api/student/${studentId}/completed-quizzes`);
+    return response.data;
+  } catch (err) {
+    console.error('Error fetching completed quizzes:', err);
+    return { completed_quizzes: {} };
+  }
 };
 
 // Mastery-Based Progression APIs
 export const getAvailableTopics = async (studentId) => {
-  const response = await api.get(`/api/student/${studentId}/available-topics`);
-  return response.data;
+  try {
+    const response = await api.get(`/api/student/${studentId}/available-topics`);
+    return response.data;
+  } catch (err) {
+    console.error('Error fetching available topics:', err);
+    return { topics: [] };
+  }
 };
 
 export const getMasteryStatus = async (studentId) => {
-  const response = await api.get(`/api/student/${studentId}/mastery-status`);
-  return response.data;
+  try {
+    const response = await api.get(`/api/student/${studentId}/mastery-status`);
+    return response.data;
+  } catch (err) {
+    console.error('Error fetching mastery status:', err);
+    return { status: {} };
+  }
 };
 
 export const checkMastery = async (studentId, topicId) => {
-  const response = await api.post(`/api/student/${studentId}/check-mastery/${topicId}`);
-  return response.data;
+  try {
+    const response = await api.post(`/api/student/${studentId}/check-mastery/${topicId}`);
+    return response.data;
+  } catch (err) {
+    console.error('Error checking mastery:', err);
+    return { mastered: false };
+  }
 };
 
 export const getProgressMap = async (studentId) => {
-  const response = await api.get(`/api/student/${studentId}/progress-map`);
-  return response.data;
+  try {
+    const response = await api.get(`/api/student/${studentId}/progress-map`);
+    return response.data;
+  } catch (err) {
+    console.error('Error fetching progress map:', err);
+    return { progress_map: {}, grades: [] };
+  }
 };
 
 // Teacher Mastery Overview API
