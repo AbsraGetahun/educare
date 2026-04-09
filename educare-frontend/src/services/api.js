@@ -52,8 +52,13 @@ export const familyRegister = async (fullName, email, password, studentEmail, re
 
 // Quiz APIs
 export const getQuizzes = async () => {
-  const response = await api.get('/api/quizzes');
-  return response.data;
+  try {
+    const response = await api.get('/api/quizzes');
+    return response.data;
+  } catch (err) {
+    console.error('Error fetching quizzes:', err);
+    return { quizzes: [] };
+  }
 };
 
 export const getQuizById = async (quizId) => {
@@ -120,8 +125,13 @@ export const getTeacherQuizzes = async () => {
 };
 
 export const createQuiz = async (quizData) => {
-  const response = await api.post('/api/teacher/quizzes', quizData);
-  return response.data;
+  try {
+    const response = await api.post('/api/quiz/create', quizData);
+    return response.data;
+  } catch (err) {
+    console.error('Error creating quiz:', err);
+    return { error: err.message, quiz_id: null };
+  }
 };
 
 export const getQuizResults = async (quizId) => {
@@ -216,8 +226,7 @@ export const rejectMaterial = async (materialId) => {
 // Student Materials APIs
 export const getApprovedMaterials = async (studentId) => {
   try {
-    const params = studentId ? { student_id: studentId } : {};
-    const response = await api.get('/api/student/materials', { params });
+    const response = await api.get('/api/student/materials');
     return response.data;
   } catch (err) {
     console.error('Error fetching materials:', err);
