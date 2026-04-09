@@ -1,14 +1,79 @@
 """
 Part 2: Curriculum Content Extractor
 Extracts explanations, examples, and formulas from FAISS search result chunks.
+Improves content quality by filtering out metadata and focusing on math content.
 """
 import re
+
+METADATA_PATTERNS = [
+    r'\bAuthors?\s*:',
+    r'\bEditor\s*:',
+    r'\bEvaluators?\s*:',
+    r'\bFederal Democratic Republic of Ethiopia',
+    r'\bMinistry of Education',
+    r'\bISBN\b',
+    r'\bCopyright\b',
+    r'\bPublished\b.*\bby\b',
+    r'\bFirst edition\b',
+]
+
+MATH_TERMS = [
+    'equation', 'solve', 'function', 'limit', 'integral', 'derivative',
+    'differentiate', 'quadratic', 'linear', 'polynomial', 'algebra',
+    'trigonometry', 'calculus', 'derivative', 'differential', 'variable',
+    'constant', 'coefficient', 'expression', 'graph', 'axis', 'slope',
+    'tangent', 'curve', 'domain', 'range', 'continuous', 'discrete',
+    'matrix', 'vector', 'determinant', 'sequence', 'series', 'factor',
+    'simplify', 'evaluate', 'substitute', 'proof', 'theorem', 'lemma'
+]
+
+EXCLUDE_PAGES = list(range(1, 10))
+
+
+def _is_metadata_chunk(text: str, page: int) -> bool:
+    """Check if chunk contains metadata or front matter."""
+    if page in EXCLUDE_PAGES:
+        return True
+    
+    text_lower = text.lower()
+    for pattern in METADATA_PATTERNS:
+        if re.search(pattern, text, re.IGNORECASE):
+            return True
+    
+    return False
+
+
+def _contains_math_content(text: str) -> bool:
+    """Check if text contains mathematical content."""
+    text_lower = text.lower()
+    math_term_count = sum(1 for term in MATH_TERMS if term in text_lower)
+    
+    has_math_symbols = bool(re.search(r'[=+\-*/^√∫∏∑∞≤≥]', text))
+    has_numbers = bool(re.search(r'\d+', text))
+    
+    return math_term_count >= 1 or (has_math_symbols and has_numbers)
+
+
+def _is_likely_prose(text: str) -> bool:
+    """Check if text is mostly narrative prose (skip it)."""
+    lines = [l.strip() for l in text.split('\n') if l.strip()]
+    if not lines:
+        return False
+    
+    name_count = 0
+    for line in lines[:5]:
+        words = line.split()
+        if words and len(words) < 5:
+            if all(w[0].isupper() for w in words if w and w[0].isalpha()):
+                name_count += 1
+    
+    return name_count > 2
 
 
 def extract_content(chunks: list) -> dict:
     """
     Takes a list of FAISS result chunks (each with 'text', 'source', 'page')
-    and extracts structured content.
+    and extracts structured content with improved filtering.
 
     Returns:
         {
@@ -26,16 +91,32 @@ def extract_content(chunks: list) -> dict:
             'source_citation': ''
         }
 
-    explanation = _extract_explanation(chunks[0].get('text', ''))
+    filtered_chunks = []
+    for chunk in chunks:
+        text = chunk.get('text', '')
+        page = chunk.get('page', 0)
+        
+        if _is_metadata_chunk(text, page):
+            continue
+        if _is_likely_prose(text):
+            continue
+        if not _contains_math_content(text):
+            continue
+            
+        filtered_chunks.append(chunk)
+    
+    if not filtered_chunks:
+        filtered_chunks = chunks
+    
+    explanation = _extract_explanation(filtered_chunks[0].get('text', ''))
     examples = []
     formulas = []
 
-    for chunk in chunks:
+    for chunk in filtered_chunks:
         text = chunk.get('text', '')
         examples.extend(_extract_examples(text))
         formulas.extend(_extract_formulas(text))
 
-    # Deduplicate while preserving order
     seen = set()
     unique_examples = []
     for e in examples:
@@ -50,8 +131,7 @@ def extract_content(chunks: list) -> dict:
             seen.add(f)
             unique_formulas.append(f)
 
-    # Build citation from first chunk
-    first = chunks[0]
+    first = filtered_chunks[0] if filtered_chunks else chunks[0]
     source = first.get('source', 'curriculum')
     page = first.get('page', '')
     citation = f"{source}, page {page}" if page else source
@@ -65,13 +145,25 @@ def extract_content(chunks: list) -> dict:
 
 
 def _extract_explanation(text: str) -> str:
-    """Return first 2-3 meaningful sentences from the chunk."""
+    """Return first 2-3 meaningful sentences containing math content."""
     if not text:
         return ''
-    # Split on sentence boundaries
+    
     sentences = re.split(r'(?<=[.!?])\s+', text.strip())
-    # Filter out very short or noisy lines
-    good = [s.strip() for s in sentences if len(s.strip()) > 20]
+    
+    good = []
+    for s in sentences:
+        s = s.strip()
+        if len(s) < 30:
+            continue
+        if _is_likely_prose(s):
+            continue
+        if _contains_math_content(s) or len(s) > 50:
+            good.append(s)
+    
+    if len(good) < 2:
+        good = [s.strip() for s in sentences if len(s.strip()) > 40][:3]
+    
     return ' '.join(good[:3])
 
 
@@ -79,16 +171,32 @@ def _extract_examples(text: str) -> list:
     """Find lines that look like examples (contain 'Example', numbers, or equations)."""
     examples = []
     lines = text.split('\n')
-    for line in lines:
-        line = line.strip()
-        if not line or len(line) < 10:
-            continue
-        # Lines with 'example' keyword
+    
+    i = 0
+    while i < len(lines):
+        line = lines[i].strip()
+        
         if re.search(r'\bexample\b', line, re.IGNORECASE):
-            examples.append(line[:200])
-        # Lines that look like math expressions (contain =, numbers, operators)
-        elif re.search(r'\d+\s*[=+\-*/^]\s*\d+', line):
-            examples.append(line[:200])
+            example_lines = [line]
+            j = i + 1
+            while j < len(lines) and len(lines[j].strip()) > 0:
+                example_lines.append(lines[j].strip())
+                j += 1
+                if len(example_lines) >= 5:
+                    break
+            
+            full_example = ' '.join(example_lines)
+            if len(full_example) > 30:
+                examples.append(full_example[:300])
+            i = j
+            continue
+        
+        if re.search(r'\d+\s*[=+\-*/^]\s*\d+', line) or re.search(r'(Solve|Evaluate|Find|Calculate)', line, re.IGNORECASE):
+            if len(line) > 20:
+                examples.append(line[:250])
+        
+        i += 1
+    
     return examples[:4]
 
 
@@ -96,13 +204,21 @@ def _extract_formulas(text: str) -> list:
     """Find lines that look like formulas (contain = and math symbols)."""
     formulas = []
     lines = text.split('\n')
+    
     for line in lines:
         line = line.strip()
         if not line or len(line) < 5:
             continue
-        # Lines with = sign and math-like content
-        if '=' in line and re.search(r'[a-zA-Z\d]', line):
-            # Avoid very long prose sentences
-            if len(line) < 150 and line.count(' ') < 20:
-                formulas.append(line[:150])
+        
+        has_equals = '=' in line
+        has_math_vars = bool(re.search(r'[a-zA-Z]{2,}', line))
+        has_operators = bool(re.search(r'[+\-*/^∫∏∑]', line))
+        
+        if has_equals and (has_math_vars or has_operators):
+            if len(line) < 180 and line.count(' ') < 25:
+                clean_line = line
+                if len(clean_line) > 150:
+                    clean_line = clean_line[:150] + '...'
+                formulas.append(clean_line)
+    
     return formulas[:5]
