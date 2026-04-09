@@ -1,5 +1,5 @@
 -- Create quiz_questions table for storing custom quiz questions
-USE educare;
+-- Run this in MySQL: mysql -u root -p educare < create_quiz_questions_table.sql
 
 CREATE TABLE IF NOT EXISTS quiz_questions (
     question_id INT PRIMARY KEY AUTO_INCREMENT,
@@ -7,12 +7,15 @@ CREATE TABLE IF NOT EXISTS quiz_questions (
     question_text TEXT NOT NULL,
     option_a VARCHAR(500) NOT NULL,
     option_b VARCHAR(500) NOT NULL,
-    option_c VARCHAR(500),
-    option_d VARCHAR(500),
+    option_c VARCHAR(500) DEFAULT NULL,
+    option_d VARCHAR(500) DEFAULT NULL,
     correct_answer CHAR(1) NOT NULL DEFAULT 'A',
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY (quiz_id) REFERENCES quizzes(quiz_id) ON DELETE CASCADE
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
+-- Create index for faster queries
+CREATE INDEX idx_quiz_id ON quiz_questions(quiz_id);
+
 -- Verify table created
-SELECT COUNT(*) as table_status FROM quiz_questions;
+SHOW TABLES LIKE 'quiz_questions';
+DESCRIBE quiz_questions;
