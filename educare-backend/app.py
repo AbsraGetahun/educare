@@ -561,23 +561,6 @@ def get_quiz_results(quiz_id):
 def create_quiz():
     """
     Create a quiz with custom questions.
-    Input format:
-    {
-      "title": "Algebra Midterm",
-      "topic_id": 1,
-      "total_marks": 20,
-      "time_limit": 30,
-      "questions": [
-        {
-          "question_text": "Solve for x: 2x + 5 = 15",
-          "option_a": "x = 3",
-          "option_b": "x = 5",
-          "option_c": "x = 10", 
-          "option_d": "x = 2",
-          "correct_answer": "B"
-        }
-      ]
-    }
     """
     try:
         data = request.get_json() or {}
@@ -593,28 +576,36 @@ def create_quiz():
         conn = get_db_connection()
         cursor = conn.cursor()
         
+        print(f"[DEBUG] Creating quiz: {title}, topic_id: {topic_id}, questions: {len(questions)}")
+        
         cursor.execute("""
             INSERT INTO quizzes (topic_id, title, total_marks, time_limit, created_at)
             VALUES (%s, %s, %s, %s, NOW())
         """, (topic_id, title, total_marks or len(questions), time_limit))
         quiz_id = cursor.lastrowid
+        print(f"[DEBUG] Quiz created with ID: {quiz_id}")
         
         questions_saved = 0
         for q in questions:
-            cursor.execute("""
-                INSERT INTO quiz_questions 
-                (quiz_id, question_text, option_a, option_b, option_c, option_d, correct_answer)
-                VALUES (%s, %s, %s, %s, %s, %s, %s)
-            """, (
-                quiz_id,
-                q.get('question_text', ''),
-                q.get('option_a', ''),
-                q.get('option_b', ''),
-                q.get('option_c', ''),
-                q.get('option_d', ''),
-                q.get('correct_answer', 'A')
-            ))
-            questions_saved += 1
+            try:
+                cursor.execute("""
+                    INSERT INTO quiz_questions 
+                    (quiz_id, question_text, option_a, option_b, option_c, option_d, correct_answer)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s)
+                """, (
+                    quiz_id,
+                    q.get('question_text', ''),
+                    q.get('option_a', ''),
+                    q.get('option_b', ''),
+                    q.get('option_c') or '',
+                    q.get('option_d') or '',
+                    q.get('correct_answer', 'A')
+                ))
+                questions_saved += 1
+            except Exception as qe:
+                print(f"[DEBUG] Error saving question: {qe}")
+        
+        print(f"[DEBUG] Saved {questions_saved} questions")
         
         conn.commit()
         cursor.close()
@@ -627,7 +618,7 @@ def create_quiz():
         }), 201
         
     except Exception as e:
-        print(f"Error creating quiz: {e}")
+        print(f"[DEBUG] Error creating quiz: {e}")
         return jsonify({"error": str(e), "quiz_id": None}), 200
 
 # ==================== FAMILY ENDPOINTS ====================
