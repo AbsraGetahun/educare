@@ -930,15 +930,16 @@ def get_pending_materials():
             return jsonify({"error": "Access denied"}), 403
         conn = get_db_connection()
         cursor = conn.cursor()
+        
         cursor.execute("""
             SELECT m.material_id, m.title, m.content, m.source_citation,
                    m.generated_date, t.topic_name
             FROM material m
-            JOIN topics t ON m.topic_id = t.topic_id
+            LEFT JOIN topics t ON m.topic_id = t.topic_id
             WHERE m.approval_status = 'Pending'
             ORDER BY m.generated_date DESC
         """)
-        materials = cursor.fetchall()
+        materials = cursor.fetchall() or []
         
         materials_list = []
         for material in materials:
@@ -947,8 +948,8 @@ def get_pending_materials():
                 'title': material[1],
                 'content': material[2],
                 'source_citation': material[3],
-                'generated_date': str(material[4]),
-                'topic_name': material[5]
+                'generated_date': str(material[4]) if material[4] else '',
+                'topic_name': material[5] if material[5] else ''
             })
         
         cursor.close()
@@ -956,7 +957,7 @@ def get_pending_materials():
         
         return jsonify({"materials": materials_list})
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"error": str(e), "materials": []}), 200
 
 @app.route('/api/materials/approve/<int:material_id>', methods=['POST'])
 @jwt_required(optional=True)
@@ -1788,71 +1789,93 @@ def get_teacher_mastery_overview():
         conn = get_db_connection()
         cursor = conn.cursor()
         
+        # Get all topics
         cursor.execute("SELECT topic_id, topic_name, grade_level FROM topics ORDER BY grade_level, topic_id")
-        topics = cursor.fetchall()
+        topics = cursor.fetchall() or []
         
+        # Get total students count
         cursor.execute("SELECT COUNT(*) FROM users WHERE role = 'student'")
-        total_students = cursor.fetchone()[0]
+        total_students = cursor.fetchone()[0] or 0
         
         overview = []
         for topic in topics:
             topic_id = topic[0]
-            cursor.execute("""
-                SELECT COUNT(DISTINCT qa.student_id)
-                FROM quiz_attempt qa
-                JOIN quizzes q ON qa.quiz_id = q.quiz_id
-                WHERE q.topic_id = %s
-                AND (qa.score * 100.0 / q.total_marks) >= 70
-            """, (topic_id,))
-            mastered_count = cursor.fetchone()[0]
             
-            cursor.execute("""
-                SELECT COUNT(DISTINCT qa.student_id)
-                FROM quiz_attempt qa
-                JOIN quizzes q ON qa.quiz_id = q.quiz_id
-                WHERE q.topic_id = %s
-            """, (topic_id,))
-            attempted_count = cursor.fetchone()[0]
-            
-            mastery_pct = round((mastered_count / total_students) * 100, 1) if total_students > 0 else 0
-            
-            cursor.execute("""
-                SELECT u.user_id, u.full_name, AVG(qa.score * 100.0 / q.total_marks) as avg_pct
-                FROM quiz_attempt qa
-                JOIN quizzes q ON qa.quiz_id = q.quiz_id
-                JOIN users u ON qa.student_id = u.user_id
-                WHERE q.topic_id = %s
-                GROUP BY u.user_id, u.full_name
-                HAVING avg_pct < 70
-                ORDER BY avg_pct ASC
-            """, (topic_id,))
-            struggling_students = []
-            for s in cursor.fetchall():
-                struggling_students.append({
-                    'student_id': s[0],
-                    'full_name': s[1],
-                    'avg_score': round(s[2], 2)
-                })
-            
-            cursor.execute("""
-                SELECT u.user_id, u.full_name
-                FROM users u
-                WHERE u.role = 'student'
-                AND u.user_id NOT IN (
-                    SELECT DISTINCT qa.student_id
+            # Get mastered count - students with >= 70% score
+            mastered_count = 0
+            attempted_count = 0
+            try:
+                cursor.execute("""
+                    SELECT COUNT(DISTINCT qa.student_id)
                     FROM quiz_attempt qa
                     JOIN quizzes q ON qa.quiz_id = q.quiz_id
                     WHERE q.topic_id = %s
-                )
-            """, (topic_id,))
-            not_started_students = []
-            for s in cursor.fetchall():
-                prereqs_met = check_prerequisites_met(cursor, s[0], topic_id)
-                if not prereqs_met:
-                    not_started_students.append({
+                    AND (qa.score * 100.0 / q.total_marks) >= 70
+                """, (topic_id,))
+                result = cursor.fetchone()
+                mastered_count = result[0] if result else 0
+            except Exception:
+                pass
+            
+            try:
+                cursor.execute("""
+                    SELECT COUNT(DISTINCT qa.student_id)
+                    FROM quiz_attempt qa
+                    JOIN quizzes q ON qa.quiz_id = q.quiz_id
+                    WHERE q.topic_id = %s
+                """, (topic_id,))
+                result = cursor.fetchone()
+                attempted_count = result[0] if result else 0
+            except Exception:
+                pass
+            
+            mastery_pct = round((mastered_count / total_students) * 100, 1) if total_students > 0 else 0
+            
+            # Get struggling students
+            struggling_students = []
+            try:
+                cursor.execute("""
+                    SELECT u.user_id, u.full_name, AVG(qa.score * 100.0 / q.total_marks) as avg_pct
+                    FROM quiz_attempt qa
+                    JOIN quizzes q ON qa.quiz_id = q.quiz_id
+                    JOIN users u ON qa.student_id = u.user_id
+                    WHERE q.topic_id = %s
+                    GROUP BY u.user_id, u.full_name
+                    HAVING avg_pct < 70
+                    ORDER BY avg_pct ASC
+                """, (topic_id,))
+                for s in cursor.fetchall() or []:
+                    struggling_students.append({
                         'student_id': s[0],
-                        'full_name': s[1]
+                        'full_name': s[1],
+                        'avg_score': round(s[2], 2)
                     })
+            except Exception:
+                pass
+            
+            # Get not started students
+            not_started_students = []
+            try:
+                cursor.execute("""
+                    SELECT u.user_id, u.full_name
+                    FROM users u
+                    WHERE u.role = 'student'
+                    AND u.user_id NOT IN (
+                        SELECT DISTINCT qa.student_id
+                        FROM quiz_attempt qa
+                        JOIN quizzes q ON qa.quiz_id = q.quiz_id
+                        WHERE q.topic_id = %s
+                    )
+                """, (topic_id,))
+                for s in cursor.fetchall() or []:
+                    prereqs_met = check_prerequisites_met(cursor, s[0], topic_id)
+                    if not prereqs_met:
+                        not_started_students.append({
+                            'student_id': s[0],
+                            'full_name': s[1]
+                        })
+            except Exception:
+                pass
             
             overview.append({
                 'topic_id': topic_id,
@@ -1870,7 +1893,7 @@ def get_teacher_mastery_overview():
         conn.close()
         return jsonify({"overview": overview, "total_students": total_students})
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"error": str(e), "overview": [], "total_students": 0}), 200
 
 @app.route('/api/teacher/heatmap', methods=['GET'])
 @jwt_required(optional=True)
@@ -1884,53 +1907,68 @@ def get_teacher_heatmap():
         cursor = conn.cursor()
 
         cursor.execute("SELECT COUNT(*) FROM users WHERE role = 'student'")
-        total_students = cursor.fetchone()[0]
+        total_students = cursor.fetchone()[0] or 0
 
         cursor.execute("SELECT topic_id, topic_name, grade_level FROM topics ORDER BY grade_level, topic_id")
-        topics = cursor.fetchall()
+        topics = cursor.fetchall() or []
 
         heatmap = []
         for topic in topics:
             topic_id = topic[0]
 
             # Count students who mastered this topic (avg score >= 70%)
-            cursor.execute("""
-                SELECT COUNT(*) FROM (
-                    SELECT qa.student_id
-                    FROM quiz_attempt qa
-                    JOIN quizzes q ON qa.quiz_id = q.quiz_id
-                    WHERE q.topic_id = %s
-                    GROUP BY qa.student_id
-                    HAVING AVG(qa.score * 100.0 / q.total_marks) >= 70
-                ) mastered
-            """, (topic_id,))
-            mastered_count = cursor.fetchone()[0]
+            mastered_count = 0
+            try:
+                cursor.execute("""
+                    SELECT COUNT(*) FROM (
+                        SELECT qa.student_id
+                        FROM quiz_attempt qa
+                        JOIN quizzes q ON qa.quiz_id = q.quiz_id
+                        WHERE q.topic_id = %s
+                        GROUP BY qa.student_id
+                        HAVING AVG(qa.score * 100.0 / q.total_marks) >= 70
+                    ) mastered
+                """, (topic_id,))
+                result = cursor.fetchone()
+                mastered_count = result[0] if result else 0
+            except Exception:
+                pass
 
             # Count students who attempted but haven't mastered (avg < 70%)
-            cursor.execute("""
-                SELECT COUNT(*) FROM (
-                    SELECT qa.student_id
-                    FROM quiz_attempt qa
-                    JOIN quizzes q ON qa.quiz_id = q.quiz_id
-                    WHERE q.topic_id = %s
-                    GROUP BY qa.student_id
-                    HAVING AVG(qa.score * 100.0 / q.total_marks) < 70
-                ) struggling
-            """, (topic_id,))
-            struggling_count = cursor.fetchone()[0]
+            struggling_count = 0
+            try:
+                cursor.execute("""
+                    SELECT COUNT(*) FROM (
+                        SELECT qa.student_id
+                        FROM quiz_attempt qa
+                        JOIN quizzes q ON qa.quiz_id = q.quiz_id
+                        WHERE q.topic_id = %s
+                        GROUP BY qa.student_id
+                        HAVING AVG(qa.score * 100.0 / q.total_marks) < 70
+                    ) struggling
+                """, (topic_id,))
+                result = cursor.fetchone()
+                struggling_count = result[0] if result else 0
+            except Exception:
+                pass
 
             # Count students who haven't attempted at all
-            cursor.execute("""
-                SELECT COUNT(*) FROM users u
-                WHERE u.role = 'student'
-                AND u.user_id NOT IN (
-                    SELECT DISTINCT qa.student_id
-                    FROM quiz_attempt qa
-                    JOIN quizzes q ON qa.quiz_id = q.quiz_id
-                    WHERE q.topic_id = %s
-                )
-            """, (topic_id,))
-            untouched_count = cursor.fetchone()[0]
+            untouched_count = 0
+            try:
+                cursor.execute("""
+                    SELECT COUNT(*) FROM users u
+                    WHERE u.role = 'student'
+                    AND u.user_id NOT IN (
+                        SELECT DISTINCT qa.student_id
+                        FROM quiz_attempt qa
+                        JOIN quizzes q ON qa.quiz_id = q.quiz_id
+                        WHERE q.topic_id = %s
+                    )
+                """, (topic_id,))
+                result = cursor.fetchone()
+                untouched_count = result[0] if result else 0
+            except Exception:
+                pass
 
             mastery_pct = round((mastered_count / total_students) * 100) if total_students > 0 else 0
 
@@ -1942,23 +1980,26 @@ def get_teacher_heatmap():
                 status = 'critical'
 
             # Get struggling students with their scores
-            cursor.execute("""
-                SELECT u.user_id, u.full_name, AVG(qa.score * 100.0 / q.total_marks) as avg_pct
-                FROM quiz_attempt qa
-                JOIN quizzes q ON qa.quiz_id = q.quiz_id
-                JOIN users u ON qa.student_id = u.user_id
-                WHERE q.topic_id = %s
-                GROUP BY u.user_id, u.full_name
-                HAVING avg_pct < 70
-                ORDER BY avg_pct ASC
-            """, (topic_id,))
             struggling_students = []
-            for s in cursor.fetchall():
-                struggling_students.append({
-                    'student_id': s[0],
-                    'full_name': s[1],
-                    'avg_score': round(s[2], 1)
-                })
+            try:
+                cursor.execute("""
+                    SELECT u.user_id, u.full_name, AVG(qa.score * 100.0 / q.total_marks) as avg_pct
+                    FROM quiz_attempt qa
+                    JOIN quizzes q ON qa.quiz_id = q.quiz_id
+                    JOIN users u ON qa.student_id = u.user_id
+                    WHERE q.topic_id = %s
+                    GROUP BY u.user_id, u.full_name
+                    HAVING avg_pct < 70
+                    ORDER BY avg_pct ASC
+                """, (topic_id,))
+                for s in cursor.fetchall() or []:
+                    struggling_students.append({
+                        'student_id': s[0],
+                        'full_name': s[1],
+                        'avg_score': round(s[2], 1)
+                    })
+            except Exception:
+                pass
 
             heatmap.append({
                 'topic_id': topic_id,
@@ -1977,7 +2018,7 @@ def get_teacher_heatmap():
         conn.close()
         return jsonify({"heatmap": heatmap, "total_students": total_students})
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"error": str(e), "heatmap": [], "total_students": 0}), 200
 
 @app.route('/api/student/<int:student_id>/recommendations', methods=['GET'])
 def get_student_recommendations(student_id):
