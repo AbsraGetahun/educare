@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { getQuizzes, getStudents, getStudentGaps, getQuizResults, createQuiz, getPendingMaterials, approveMaterial, rejectMaterial, getTeacherMasteryOverview, getHeatmap, searchCurriculum, generatePracticeMaterial } from '../services/api';
+import { getQuizzes, getStudents, getStudentGaps, getQuizResults, createQuiz, updateQuiz, deleteQuiz, getPendingMaterials, approveMaterial, rejectMaterial, getTeacherMasteryOverview, getHeatmap, searchCurriculum, generatePracticeMaterial } from '../services/api';
 
 function TeacherDashboard() {
   const [activeTab, setActiveTab] = useState('overview');
@@ -11,6 +11,8 @@ function TeacherDashboard() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [showCreateQuiz, setShowCreateQuiz] = useState(false);
+  const [showEditQuiz, setShowEditQuiz] = useState(false);
+  const [editingQuiz, setEditingQuiz] = useState(null);
   const [selectedQuizResults, setSelectedQuizResults] = useState(null);
   const [showResultsModal, setShowResultsModal] = useState(false);
   const [pendingMaterials, setPendingMaterials] = useState([]);
@@ -171,6 +173,39 @@ function TeacherDashboard() {
       alert('Material approved successfully!');
     } catch (err) {
       alert('Failed to approve material');
+    }
+  };
+
+  const handleEditQuiz = (quiz) => {
+    setEditingQuiz(quiz);
+    setQuizForm({
+      title: quiz.title,
+      topic_id: quiz.topic_id || '',
+      total_marks: quiz.total_marks || '',
+      time_limit: quiz.time_limit || '30',
+      questions: quiz.questions || []
+    });
+    setShowEditQuiz(true);
+  };
+
+  const handleUpdateQuiz = async () => {
+    if (!editingQuiz) return;
+    try {
+      const payload = {
+        title: quizForm.title,
+        topic_id: parseInt(quizForm.topic_id),
+        total_marks: quizForm.total_marks || quizForm.questions.length,
+        time_limit: quizForm.time_limit || 30,
+        questions: quizForm.questions
+      };
+      await updateQuiz(editingQuiz.quiz_id, payload);
+      alert('Quiz updated successfully!');
+      setShowEditQuiz(false);
+      setEditingQuiz(null);
+      setQuizForm({ title: '', topic_id: '', total_marks: '', time_limit: '30', questions: [] });
+      fetchData();
+    } catch (err) {
+      alert('Failed to update quiz');
     }
   };
 
@@ -885,7 +920,11 @@ function TeacherDashboard() {
                     >
                       View Results
                     </button>
-                    <button className="flex-1 px-2 py-1 text-xs rounded text-white" style={{ backgroundColor: '#2563eb' }}>
+                    <button 
+                      onClick={() => handleEditQuiz(quiz)}
+                      className="flex-1 px-2 py-1 text-xs rounded text-white" 
+                      style={{ backgroundColor: '#2563eb' }}
+                    >
                       Edit
                     </button>
                   </div>
@@ -1118,6 +1157,121 @@ function TeacherDashboard() {
                 >
                   Create Quiz ({quizForm.questions.length} questions)
                 </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Edit Quiz Modal */}
+      {showEditQuiz && editingQuiz && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-lg shadow-xl w-full max-w-2xl max-h-[85vh] overflow-y-auto p-4">
+            <h2 className="text-lg font-bold mb-3">Edit Quiz</h2>
+            <form onSubmit={(e) => { e.preventDefault(); handleUpdateQuiz(); }}>
+              <div className="grid grid-cols-2 gap-3 mb-3">
+                <div>
+                  <label className="block text-gray-700 text-sm font-medium mb-1">Quiz Title</label>
+                  <input
+                    type="text"
+                    value={quizForm.title}
+                    onChange={(e) => setQuizForm({ ...quizForm, title: e.target.value })}
+                    className="w-full px-2 py-1.5 text-sm border rounded"
+                    required
+                  />
+                </div>
+                <div>
+                  <label className="block text-gray-700 text-sm font-medium mb-1">Topic</label>
+                  <select
+                    value={quizForm.topic_id}
+                    onChange={(e) => setQuizForm({ ...quizForm, topic_id: e.target.value })}
+                    className="w-full px-2 py-1.5 text-sm border rounded"
+                    required
+                  >
+                    <option value="">Select Topic</option>
+                    <option value="1">Algebra</option>
+                    <option value="2">Limits</option>
+                    <option value="3">Integration</option>
+                  </select>
+                </div>
+              </div>
+              
+              <div className="grid grid-cols-2 gap-3 mb-4">
+                <div>
+                  <label className="block text-gray-700 text-sm font-medium mb-1">Time Limit (minutes)</label>
+                  <input
+                    type="number"
+                    value={quizForm.time_limit}
+                    onChange={(e) => setQuizForm({ ...quizForm, time_limit: e.target.value })}
+                    className="w-full px-2 py-1.5 text-sm border rounded"
+                  />
+                </div>
+                <div className="flex items-center">
+                  <span className="text-sm text-gray-600">{quizForm.questions.length} questions</span>
+                </div>
+              </div>
+
+              <div className="border rounded-lg p-3 mb-4">
+                <h3 className="text-sm font-semibold mb-2">Add Question</h3>
+                <div className="mb-2">
+                  <input
+                    type="text"
+                    placeholder="Enter question text..."
+                    value={newQuestion.question_text}
+                    onChange={(e) => setNewQuestion({ ...newQuestion, question_text: e.target.value })}
+                    className="w-full px-2 py-1.5 text-sm border rounded"
+                  />
+                </div>
+                <div className="grid grid-cols-2 gap-2 mb-2">
+                  <div className="flex items-center gap-1">
+                    <span className="text-xs text-gray-500 w-4">A:</span>
+                    <input type="text" placeholder="Option A" value={newQuestion.option_a} onChange={(e) => setNewQuestion({ ...newQuestion, option_a: e.target.value })} className="flex-1 px-2 py-1 text-xs border rounded" />
+                  </div>
+                  <div className="flex items-center gap-1">
+                    <span className="text-xs text-gray-500 w-4">B:</span>
+                    <input type="text" placeholder="Option B" value={newQuestion.option_b} onChange={(e) => setNewQuestion({ ...newQuestion, option_b: e.target.value })} className="flex-1 px-2 py-1 text-xs border rounded" />
+                  </div>
+                  <div className="flex items-center gap-1">
+                    <span className="text-xs text-gray-500 w-4">C:</span>
+                    <input type="text" placeholder="Option C" value={newQuestion.option_c} onChange={(e) => setNewQuestion({ ...newQuestion, option_c: e.target.value })} className="flex-1 px-2 py-1 text-xs border rounded" />
+                  </div>
+                  <div className="flex items-center gap-1">
+                    <span className="text-xs text-gray-500 w-4">D:</span>
+                    <input type="text" placeholder="Option D" value={newQuestion.option_d} onChange={(e) => setNewQuestion({ ...newQuestion, option_d: e.target.value })} className="flex-1 px-2 py-1 text-xs border rounded" />
+                  </div>
+                </div>
+                <div className="flex items-center gap-2 mb-2">
+                  <span className="text-xs text-gray-600">Correct:</span>
+                  <select value={newQuestion.correct_answer} onChange={(e) => setNewQuestion({ ...newQuestion, correct_answer: e.target.value })} className="px-2 py-1 text-xs border rounded">
+                    <option value="A">A</option>
+                    <option value="B">B</option>
+                    <option value="C">C</option>
+                    <option value="D">D</option>
+                  </select>
+                </div>
+                <button type="button" onClick={handleAddQuestion} className="px-3 py-1.5 text-xs rounded text-white" style={{ backgroundColor: '#10b981' }}>+ Add Question</button>
+              </div>
+
+              {quizForm.questions.length > 0 && (
+                <div className="mb-4">
+                  <h3 className="text-sm font-semibold mb-2">Questions ({quizForm.questions.length})</h3>
+                  <div className="space-y-2 max-h-40 overflow-y-auto">
+                    {quizForm.questions.map((q, idx) => (
+                      <div key={idx} className="flex items-start justify-between p-2 rounded" style={{ backgroundColor: '#f9fafb' }}>
+                        <div className="flex-1">
+                          <p className="text-xs font-medium">{idx + 1}. {q.question_text.substring(0, 60)}...</p>
+                          <p className="text-xs text-gray-500">Answer: {q.correct_answer}</p>
+                        </div>
+                        <button type="button" onClick={() => handleRemoveQuestion(idx)} className="text-red-500 text-xs hover:text-red-700 ml-2">✕</button>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+              
+              <div className="flex justify-between">
+                <button type="button" onClick={() => { setShowEditQuiz(false); setEditingQuiz(null); setQuizForm({ title: '', topic_id: '', total_marks: '', time_limit: '30', questions: [] }); }} className="px-3 py-1.5 text-sm rounded-md hover:bg-gray-200" style={{ backgroundColor: '#e5e7eb' }}>Cancel</button>
+                <button type="submit" className="px-3 py-1.5 text-sm rounded-md text-white" style={{ backgroundColor: '#2563eb' }}>Save Changes</button>
               </div>
             </form>
           </div>
