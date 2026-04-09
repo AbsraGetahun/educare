@@ -67,11 +67,16 @@ export const getQuizById = async (quizId) => {
 };
 
 export const submitQuiz = async (quizId, studentId, answers) => {
-  const response = await api.post(`/api/quizzes/${quizId}/submit`, {
-    student_id: studentId,
-    answers
-  });
-  return response.data;
+  try {
+    const response = await api.post(`/api/quizzes/${quizId}/submit`, {
+      student_id: studentId,
+      answers
+    });
+    return response.data;
+  } catch (err) {
+    console.error('Error submitting quiz:', err);
+    return { error: err.response?.data?.error || 'Failed to submit quiz', score: 0 };
+  }
 };
 
 // Student APIs
@@ -134,9 +139,34 @@ export const createQuiz = async (quizData) => {
   }
 };
 
+export const updateQuiz = async (quizId, quizData) => {
+  try {
+    const response = await api.put(`/api/quiz/${quizId}`, quizData);
+    return response.data;
+  } catch (err) {
+    console.error('Error updating quiz:', err);
+    return { error: err.message };
+  }
+};
+
+export const deleteQuiz = async (quizId) => {
+  try {
+    const response = await api.delete(`/api/quiz/${quizId}`);
+    return response.data;
+  } catch (err) {
+    console.error('Error deleting quiz:', err);
+    return { error: err.message };
+  }
+};
+
 export const getQuizResults = async (quizId) => {
-  const response = await api.get(`/api/teacher/quizzes/${quizId}/results`);
-  return response.data;
+  try {
+    const response = await api.get(`/api/quiz/${quizId}/results`);
+    return response.data;
+  } catch (err) {
+    console.error('Error fetching quiz results:', err);
+    return { results: [], error: err.message };
+  }
 };
 
 // Admin APIs
