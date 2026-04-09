@@ -1,17 +1,66 @@
 import os
 import json
+import re
 import fitz
 import numpy as np
 from sklearn.feature_extraction.text import TfidfVectorizer
 
-# Configuration
 PDF_FOLDER = "curriculum_data"
 INDEX_FOLDER = "faiss_index"
-CHUNK_SIZE = 1000
+CHUNK_SIZE = 2000
+MIN_CHUNK_LENGTH = 150
 
-# Create folders
-os.makedirs(PDF_FOLDER, exist_ok=True)
-os.makedirs(INDEX_FOLDER, exist_ok=True)
+METADATA_PATTERNS = [
+    'Authors:', 'Editor:', 'Evaluators:',
+    'Federal Democratic Republic of Ethiopia',
+    'Ministry of Education',
+    'ISBN', 'Copyright',
+]
+
+EXCLUDE_PAGES = list(range(1, 10))
+
+
+def _is_metadata_page(text: str, page_num: int) -> bool:
+    """Check if page should be skipped (front matter or metadata)."""
+    if page_num in EXCLUDE_PAGES:
+        return True
+    
+    text_lower = text.lower()
+    for pattern in METADATA_PATTERNS:
+        if pattern.lower() in text_lower:
+            return True
+    
+    return False
+
+
+def _split_into_chunks(text: str, min_size: int = MIN_CHUNK_LENGTH) -> list:
+    """Split text by paragraphs, sections, or fall back to fixed size."""
+    chunks = []
+    
+    paragraphs = re.split(r'\n\s*\n', text)
+    
+    current_chunk = ""
+    for para in paragraphs:
+        para = para.strip()
+        if not para:
+            continue
+        
+        if len(current_chunk) + len(para) + 1 < CHUNK_SIZE:
+            current_chunk += " " + para if current_chunk else para
+        else:
+            if len(current_chunk) >= min_size:
+                chunks.append(current_chunk)
+            
+            if len(para) >= min_size:
+                current_chunk = para
+            else:
+                current_chunk = ""
+    
+    if len(current_chunk) >= min_size:
+        chunks.append(current_chunk)
+    
+    return chunks
+
 
 print("Using TF-IDF for text embeddings (no download required)...")
 
@@ -31,23 +80,30 @@ for pdf_file in pdf_files:
     pdf_path = os.path.join(PDF_FOLDER, pdf_file)
     
     doc = fitz.open(pdf_path)
+    page_count = 0
     
     for page_num, page in enumerate(doc):
+        page_num += 1
         text = page.get_text()
         
-        for i in range(0, len(text), CHUNK_SIZE):
-            chunk = text[i:i+CHUNK_SIZE]
-            if len(chunk.strip()) > 50:
+        if _is_metadata_page(text, page_num):
+            continue
+        
+        text_chunks = _split_into_chunks(text)
+        
+        for chunk in text_chunks:
+            if len(chunk.strip()) > MIN_CHUNK_LENGTH:
                 chunks.append(chunk)
                 metadata.append({
                     "source": pdf_file,
-                    "page": page_num + 1,
+                    "page": page_num,
                     "chunk_index": len(chunks),
-                    "text": chunk
+                    "text": chunk[:2500]
                 })
+        page_count += 1
     
     doc.close()
-    print(f"  Extracted {len([m for m in metadata if m['source'] == pdf_file])} chunks")
+    print(f"  Extracted {len([m for m in metadata if m['source'] == pdf_file])} chunks from {page_count} pages")
 
 print(f"\nTotal chunks: {len(chunks)}")
 
@@ -56,7 +112,7 @@ if len(chunks) == 0:
     exit(1)
 
 print("Creating TF-IDF embeddings...")
-vectorizer = TfidfVectorizer(max_features=384)
+vectorizer = TfidfVectorizer(max_features=384, stop_words='english')
 embeddings = vectorizer.fit_transform(chunks).toarray()
 
 print("Saving vectorizer...")
