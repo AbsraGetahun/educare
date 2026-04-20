@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
-import { register } from '../services/api';
+import { register, resendVerification } from '../services/api';
 
 function StudentRegister() {
   const [fullName, setFullName] = useState('');
@@ -9,7 +9,9 @@ function StudentRegister() {
   const [gradeLevel, setGradeLevel] = useState('');
   const [section, setSection] = useState('');
   const [error, setError] = useState('');
+  const [success, setSuccess] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [resending, setResending] = useState(false);
   const navigate = useNavigate();
 
   const handleSubmit = async (e) => {
@@ -25,12 +27,23 @@ function StudentRegister() {
         grade_level: gradeLevel,
         section
       });
-      alert('Registration successful! Please login.');
-      navigate('/student/login');
+      setSuccess(true);
     } catch (err) {
       setError(err.response?.data?.error || 'Registration failed');
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handleResendVerification = async () => {
+    setResending(true);
+    try {
+      await resendVerification(email);
+      alert('Verification email sent! Please check your inbox.');
+    } catch (err) {
+      alert(err.response?.data?.error || 'Failed to resend verification email');
+    } finally {
+      setResending(false);
     }
   };
 
@@ -52,23 +65,51 @@ function StudentRegister() {
 
         {/* Registration Card */}
         <div className="bg-white rounded-2xl shadow-xl p-8">
-          {error && (
-            <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-lg mb-6">
-              {error}
+          {success ? (
+            <div className="text-center">
+              <div className="w-16 h-16 bg-green-100 rounded-full flex items-center justify-center mx-auto mb-4">
+                <svg className="w-8 h-8 text-green-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
+                </svg>
+              </div>
+              <h2 className="text-xl font-bold text-gray-900 mb-2">Check Your Email</h2>
+              <p className="text-gray-600 mb-4">
+                We've sent a verification link to <strong>{email}</strong>. 
+                Please check your inbox and click the link to verify your account.
+              </p>
+              <p className="text-sm text-gray-500 mb-6">
+                Didn't receive the email? 
+                <button 
+                  type="button"
+                  onClick={handleResendVerification}
+                  disabled={resending}
+                  className="text-blue-600 hover:text-blue-700 font-medium ml-1 disabled:opacity-50"
+                >
+                  {resending ? 'Sending...' : 'Resend email'}
+                </button>
+              </p>
+              <Link to="/student/login" className="text-blue-600 hover:text-blue-700 font-medium">
+                Go to Login
+              </Link>
             </div>
-          )}
-          
-          <form onSubmit={handleSubmit}>
-            <div className="mb-6">
-              <label className="block text-gray-700 text-sm font-semibold mb-2">Full Name</label>
-              <input
-                type="text"
-                value={fullName}
-                onChange={(e) => setFullName(e.target.value)}
-                className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition"
-                placeholder="John Doe"
-                required
-              />
+          ) : (
+            <form onSubmit={handleSubmit}>
+              {error && (
+                <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-lg mb-6">
+                  {error}
+                </div>
+              )}
+              
+              <div className="mb-6">
+                <label className="block text-gray-700 text-sm font-semibold mb-2">Full Name</label>
+                <input
+                  type="text"
+                  value={fullName}
+                  onChange={(e) => setFullName(e.target.value)}
+                  className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition"
+                  placeholder="John Doe"
+                  required
+                />
             </div>
             
             <div className="mb-6">
@@ -126,11 +167,12 @@ function StudentRegister() {
             <button
               type="submit"
               disabled={loading}
-              className="w-full bg-blue-600 text-white py-3 rounded-lg font-semibold hover:bg-blue-700 transition disabled:opacity-50 disabled:cursor-not-allowed shadow-lg"
-            >
-              {loading ? 'Creating account...' : 'Create Account'}
-            </button>
-          </form>
+className="w-full bg-blue-600 text-white py-3 rounded-lg font-semibold hover:bg-blue-700 transition disabled:opacity-50 disabled:cursor-not-allowed shadow-lg"
+              >
+                {loading ? 'Creating account...' : 'Create Account'}
+              </button>
+            </form>
+          )}
           
           <div className="mt-6 text-center">
             <p className="text-gray-600">
