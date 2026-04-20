@@ -270,7 +270,7 @@ function FamilyDashboard() {
               </div>
               {chartData.length > 0 ? (
                 <div className="h-80">
-                  <ResponsiveContainer width="100%" height="100%">
+                  <ResponsiveContainer width="100%" height={300}>
                     {chartType === 'line' ? (
                       <LineChart data={chartData}>
                         <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
