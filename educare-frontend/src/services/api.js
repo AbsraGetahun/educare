@@ -29,6 +29,16 @@ export const register = async (userData) => {
   return response.data;
 };
 
+export const verifyEmail = async (token) => {
+  const response = await api.get('/api/verify-email', { params: { token } });
+  return response.data;
+};
+
+export const resendVerification = async (email) => {
+  const response = await api.post('/api/resend-verification', { email });
+  return response.data;
+};
+
 export const adminLogin = async (email, password) => {
   const response = await api.post('/api/admin/login', { email, password });
   return response.data;
