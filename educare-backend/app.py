@@ -278,7 +278,7 @@ def login():
         conn = get_db_connection()
         cursor = conn.cursor()
         cursor.execute(
-            "SELECT user_id, full_name, email, role, password FROM users WHERE email = %s",
+            "SELECT user_id, full_name, email, role, password, is_verified FROM users WHERE email = %s",
             (email,)
         )
         user = cursor.fetchone()
@@ -287,6 +287,14 @@ def login():
         
         if not user:
             return jsonify({"error": "Invalid credentials"}), 401
+        
+        # Check if email is verified (except for admin and teacher)
+        if user[3] not in ['admin', 'teacher'] and not user[5]:
+            return jsonify({
+                "error": "Please verify your email before logging in",
+                "requires_verification": True,
+                "email": email
+            }), 401
         
         stored_password = user[4]
         
@@ -302,7 +310,7 @@ def login():
                 # Plain text comparison (fallback)
                 password_valid = (password == stored_password)
                 # Migrate to bcrypt if available
-                if password_valid and BCRYPT_AVAILABLE:
+                if password_valid and BCRYPT_AVAILABLE and bcrypt:
                     try:
                         conn = get_db_connection()
                         cursor = conn.cursor()
@@ -333,9 +341,147 @@ def login():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
-@app.route('/api/register', methods=['POST'])
+@app.route('/api/verify-email', methods=['GET'])
+def verify_email():
+    try:
+        token = request.args.get('token')
+        
+        if not token:
+            return jsonify({"error": "Verification token required"}), 400
+        
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        
+        cursor.execute(
+            "SELECT user_id, full_name, email, role, token_expiry FROM users WHERE verification_token = %s",
+            (token,)
+        )
+        user = cursor.fetchone()
+        
+        if not user:
+            cursor.close()
+            conn.close()
+            return jsonify({
+                "success": False,
+                "error": "Invalid verification token"
+            }), 200
+        
+        # Check if already verified
+        cursor.execute("SELECT is_verified FROM users WHERE verification_token = %s", (token,))
+        is_verified = cursor.fetchone()
+        if is_verified and is_verified[0]:
+            cursor.close()
+            conn.close()
+            return jsonify({
+                "success": True,
+                "message": "Email already verified. You can now login."
+            }), 200
+        
+        # Check if token expired
+        if user[4] and user[4] < datetime.now():
+            cursor.close()
+            conn.close()
+            return jsonify({
+                "success": False,
+                "error": "Verification token has expired. Please request a new verification email."
+            }), 200
+        
+        # Verify the user
+        cursor.execute(
+            "UPDATE users SET is_verified = TRUE, verification_token = NULL, token_expiry = NULL WHERE verification_token = %s",
+            (token,)
+        )
+        conn.commit()
+        
+        cursor.close()
+        conn.close()
+        
+        return jsonify({
+            "success": True,
+            "message": "Email verified successfully! You can now login."
+        }), 200
+        
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+from datetime import datetime
+
+@app.route('/api/resend-verification', methods=['POST'])
+def resend_verification():
+    try:
+        from email_service import generate_verification_token, get_token_expiry, send_verification_email
+        
+        data = request.get_json()
+        email = data.get('email')
+        
+        if not email:
+            return jsonify({"error": "Email is required"}), 400
+        
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        
+        cursor.execute(
+            "SELECT user_id, full_name, role, is_verified FROM users WHERE email = %s",
+            (email,)
+        )
+        user = cursor.fetchone()
+        
+        if not user:
+            cursor.close()
+            conn.close()
+            return jsonify({"message": "If that email exists, a verification link has been sent."}), 200
+        
+        # Check if already verified
+        if user[3]:
+            cursor.close()
+            conn.close()
+            return jsonify({"message": "This email is already verified. You can login."}), 200
+        
+        # Check rate limit (simple implementation - check if token was sent recently)
+        cursor.execute(
+            "SELECT token_expiry FROM users WHERE email = %s",
+            (email,)
+        )
+        result = cursor.fetchone()
+        
+        if result and result[0]:
+            try:
+                token_time = result[0]
+                if isinstance(token_time, str):
+                    token_time = datetime.strptime(token_time, '%Y-%m-%d %H:%M:%S')
+                if token_time > datetime.now():
+                    time_left = (token_time - datetime.now()).total_seconds() / 60
+                    if time_left > 1:
+                        cursor.close()
+                        conn.close()
+                        return jsonify({"message": "Please wait a minute before requesting another verification email."}), 200
+            except Exception:
+                pass
+        
+        # Generate new token
+        verification_token = generate_verification_token()
+        token_expiry = get_token_expiry()
+        
+        cursor.execute(
+            "UPDATE users SET verification_token = %s, token_expiry = %s WHERE email = %s",
+            (verification_token, token_expiry, email)
+        )
+        conn.commit()
+        
+        cursor.close()
+        conn.close()
+        
+        # Send verification email
+        send_verification_email(email, user[1], verification_token)
+        
+        return jsonify({"message": "Verification email sent. Please check your inbox."}), 200
+        
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 def register():
     try:
+        from email_service import generate_verification_token, get_token_expiry, send_verification_email
+        
         data = request.get_json()
         full_name = data.get('full_name')
         email = data.get('email')
@@ -356,20 +502,33 @@ def register():
         section = str(section).strip()
 
         # Hash the password using bcrypt
-        hashed_password = bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
+        if BCRYPT_AVAILABLE and bcrypt:
+            hashed_password = bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
+        else:
+            hashed_password = password
 
         conn = get_db_connection()
         cursor = conn.cursor()
 
-        cursor.execute("SELECT user_id FROM users WHERE email = %s", (email,))
-        if cursor.fetchone():
-            cursor.close()
-            conn.close()
-            return jsonify({"error": "Email already registered"}), 400
+        cursor.execute("SELECT user_id, is_verified FROM users WHERE email = %s", (email,))
+        existing = cursor.fetchone()
+        if existing:
+            if existing[1]:
+                cursor.close()
+                conn.close()
+                return jsonify({"error": "Email already registered"}), 400
+            else:
+                cursor.close()
+                conn.close()
+                return jsonify({"error": "Email already registered but not verified. Please check your email or request a new verification link."}), 400
+
+        # Generate verification token
+        verification_token = generate_verification_token()
+        token_expiry = get_token_expiry()
 
         cursor.execute(
-            "INSERT INTO users (full_name, email, password, role) VALUES (%s, %s, %s, 'student')",
-            (full_name, email, hashed_password)
+            "INSERT INTO users (full_name, email, password, role, is_verified, verification_token, token_expiry) VALUES (%s, %s, %s, 'student', FALSE, %s, %s)",
+            (full_name, email, hashed_password, verification_token, token_expiry)
         )
         user_id = int(cursor.lastrowid)
 
@@ -382,7 +541,13 @@ def register():
         cursor.close()
         conn.close()
         
-        return jsonify({"message": "Registration successful! Please login."}), 201
+        # Send verification email
+        send_verification_email(email, full_name, verification_token)
+        
+        return jsonify({
+            "message": "Registration successful! Please check your email to verify your account.",
+            "requires_verification": True
+        }), 201
         
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -769,6 +934,8 @@ def delete_quiz(quiz_id):
 @app.route('/api/family/register', methods=['POST'])
 def family_register():
     try:
+        from email_service import generate_verification_token, get_token_expiry, send_verification_email
+        
         data = request.get_json()
         full_name = data.get('full_name')
         email = data.get('email')
@@ -780,17 +947,26 @@ def family_register():
             return jsonify({"error": "All fields required"}), 400
         
         # Hash the password using bcrypt
-        hashed_password = bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
+        if BCRYPT_AVAILABLE and bcrypt:
+            hashed_password = bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
+        else:
+            hashed_password = password
         
         conn = get_db_connection()
         cursor = conn.cursor()
         
         # Check if email already exists
-        cursor.execute("SELECT user_id FROM users WHERE email = %s", (email,))
-        if cursor.fetchone():
-            cursor.close()
-            conn.close()
-            return jsonify({"error": "Email already registered"}), 400
+        cursor.execute("SELECT user_id, is_verified FROM users WHERE email = %s", (email,))
+        existing = cursor.fetchone()
+        if existing:
+            if existing[1]:
+                cursor.close()
+                conn.close()
+                return jsonify({"error": "Email already registered"}), 400
+            else:
+                cursor.close()
+                conn.close()
+                return jsonify({"error": "Email already registered but not verified. Please check your email or request a new verification link."}), 400
         
         # Look up student by email
         cursor.execute("SELECT user_id FROM users WHERE email = %s AND role = 'student'", (student_email,))
@@ -802,12 +978,16 @@ def family_register():
         
         student_id = student[0]
         
+        # Generate verification token
+        verification_token = generate_verification_token()
+        token_expiry = get_token_expiry()
+        
         # Insert user with family role
         cursor.execute(
-            "INSERT INTO users (full_name, email, password, role) VALUES (%s, %s, %s, 'family')",
-            (full_name, email, hashed_password)
+            "INSERT INTO users (full_name, email, password, role, is_verified, verification_token, token_expiry) VALUES (%s, %s, %s, 'family', FALSE, %s, %s)",
+            (full_name, email, hashed_password, verification_token, token_expiry)
         )
-        user_id = cursor.lastrowid
+        user_id = cursor.lastrowid()
         
         # Link to student
         cursor.execute(
@@ -819,8 +999,12 @@ def family_register():
         cursor.close()
         conn.close()
         
+        # Send verification email
+        send_verification_email(email, full_name, verification_token)
+        
         return jsonify({
-            "message": "Family account created successfully",
+            "message": "Family account created! Please check your email to verify your account.",
+            "requires_verification": True,
             "user_id": user_id,
             "linked_students": 1
         }), 201
@@ -874,7 +1058,7 @@ def family_login():
         conn = get_db_connection()
         cursor = conn.cursor()
         cursor.execute(
-            "SELECT user_id, full_name, email, role, password FROM users WHERE email = %s",
+            "SELECT user_id, full_name, email, role, password, is_verified FROM users WHERE email = %s",
             (email,)
         )
         user = cursor.fetchone()
@@ -884,19 +1068,29 @@ def family_login():
             conn.close()
             return jsonify({"error": "Invalid credentials"}), 401
         
+        # Check if email is verified
+        if not user[5]:
+            cursor.close()
+            conn.close()
+            return jsonify({
+                "error": "Please verify your email before logging in",
+                "requires_verification": True,
+                "email": email
+            }), 401
+        
         stored_password = user[4]
         
         # Check bcrypt hash first, then fall back to plain text for migration
         password_valid = False
         if stored_password:
-            if stored_password.startswith('$2'):
+            if BCRYPT_AVAILABLE and stored_password.startswith('$2'):
                 try:
                     password_valid = bcrypt.checkpw(password.encode('utf-8'), stored_password.encode('utf-8'))
                 except Exception:
                     password_valid = False
             else:
                 password_valid = (password == stored_password)
-                if password_valid:
+                if password_valid and BCRYPT_AVAILABLE and bcrypt:
                     new_hash = bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
                     cursor.execute("UPDATE users SET password = %s WHERE user_id = %s", (new_hash, user[0]))
                     conn.commit()
