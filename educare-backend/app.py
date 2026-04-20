@@ -5,9 +5,33 @@ import MySQLdb
 import random
 import json
 import os
-import faiss
-import pickle
-import numpy as np
+
+# Optional imports - app will work without these
+try:
+    import faiss
+    FAISS_AVAILABLE = True
+except ImportError:
+    FAISS_AVAILABLE = False
+
+try:
+    import pickle
+except ImportError:
+    import pickle as pickle
+
+try:
+    import numpy as np
+except ImportError:
+    np = None
+
+# bcrypt for password hashing - define placeholder first, then import
+bcrypt = None
+BCRYPT_AVAILABLE = False
+try:
+    import bcrypt
+    if bcrypt:
+        BCRYPT_AVAILABLE = True
+except ImportError:
+    pass
 
 app = Flask(__name__)
 CORS(app, 
@@ -264,7 +288,33 @@ def login():
         if not user:
             return jsonify({"error": "Invalid credentials"}), 401
         
-        if password != user[4]:
+        stored_password = user[4]
+        
+        # Check password
+        password_valid = False
+        if stored_password:
+            if BCRYPT_AVAILABLE and stored_password.startswith('$2'):
+                try:
+                    password_valid = bcrypt.checkpw(password.encode('utf-8'), stored_password.encode('utf-8'))
+                except Exception:
+                    password_valid = False
+            else:
+                # Plain text comparison (fallback)
+                password_valid = (password == stored_password)
+                # Migrate to bcrypt if available
+                if password_valid and BCRYPT_AVAILABLE:
+                    try:
+                        conn = get_db_connection()
+                        cursor = conn.cursor()
+                        new_hash = bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
+                        cursor.execute("UPDATE users SET password = %s WHERE user_id = %s", (new_hash, user[0]))
+                        conn.commit()
+                        cursor.close()
+                        conn.close()
+                    except Exception:
+                        pass
+        
+        if not password_valid:
             return jsonify({"error": "Invalid credentials"}), 401
         
         access_token = create_access_token(identity={
@@ -305,6 +355,9 @@ def register():
 
         section = str(section).strip()
 
+        # Hash the password using bcrypt
+        hashed_password = bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
+
         conn = get_db_connection()
         cursor = conn.cursor()
 
@@ -316,7 +369,7 @@ def register():
 
         cursor.execute(
             "INSERT INTO users (full_name, email, password, role) VALUES (%s, %s, %s, 'student')",
-            (full_name, email, password)
+            (full_name, email, hashed_password)
         )
         user_id = int(cursor.lastrowid)
 
@@ -726,6 +779,9 @@ def family_register():
         if not full_name or not email or not password or not student_email:
             return jsonify({"error": "All fields required"}), 400
         
+        # Hash the password using bcrypt
+        hashed_password = bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
+        
         conn = get_db_connection()
         cursor = conn.cursor()
         
@@ -749,7 +805,7 @@ def family_register():
         # Insert user with family role
         cursor.execute(
             "INSERT INTO users (full_name, email, password, role) VALUES (%s, %s, %s, 'family')",
-            (full_name, email, password)
+            (full_name, email, hashed_password)
         )
         user_id = cursor.lastrowid
         
@@ -828,7 +884,24 @@ def family_login():
             conn.close()
             return jsonify({"error": "Invalid credentials"}), 401
         
-        if password != user[4]:
+        stored_password = user[4]
+        
+        # Check bcrypt hash first, then fall back to plain text for migration
+        password_valid = False
+        if stored_password:
+            if stored_password.startswith('$2'):
+                try:
+                    password_valid = bcrypt.checkpw(password.encode('utf-8'), stored_password.encode('utf-8'))
+                except Exception:
+                    password_valid = False
+            else:
+                password_valid = (password == stored_password)
+                if password_valid:
+                    new_hash = bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
+                    cursor.execute("UPDATE users SET password = %s WHERE user_id = %s", (new_hash, user[0]))
+                    conn.commit()
+        
+        if not password_valid:
             cursor.close()
             conn.close()
             return jsonify({"error": "Invalid credentials"}), 401
@@ -1350,7 +1423,24 @@ def admin_login():
             conn.close()
             return jsonify({"error": "Invalid credentials"}), 401
         
-        if password != user[4]:
+        stored_password = user[4]
+        
+        # Check bcrypt hash first, then fall back to plain text for migration
+        password_valid = False
+        if stored_password:
+            if stored_password.startswith('$2'):
+                try:
+                    password_valid = bcrypt.checkpw(password.encode('utf-8'), stored_password.encode('utf-8'))
+                except Exception:
+                    password_valid = False
+            else:
+                password_valid = (password == stored_password)
+                if password_valid:
+                    new_hash = bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
+                    cursor.execute("UPDATE users SET password = %s WHERE user_id = %s", (new_hash, user[0]))
+                    conn.commit()
+        
+        if not password_valid:
             cursor.close()
             conn.close()
             return jsonify({"error": "Invalid credentials"}), 401
@@ -1531,6 +1621,9 @@ def admin_create_user():
         if role not in ['student', 'teacher', 'family', 'admin']:
             return jsonify({"error": "Invalid role"}), 400
         
+        # Hash the password using bcrypt
+        hashed_password = bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
+        
         conn = get_db_connection()
         cursor = conn.cursor()
         
@@ -1541,10 +1634,10 @@ def admin_create_user():
             conn.close()
             return jsonify({"error": "Email already registered"}), 400
         
-        # Insert user
+        # Insert user with hashed password
         cursor.execute(
             "INSERT INTO users (full_name, email, password, role, created_at) VALUES (%s, %s, %s, %s, NOW())",
-            (full_name, email, password, role)
+            (full_name, email, hashed_password, role)
         )
         user_id = cursor.lastrowid
         
@@ -1654,9 +1747,11 @@ def admin_update_user(user_id):
         
         # Update user
         if password:
+            # Hash the password using bcrypt
+            hashed_password = bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
             cursor.execute(
                 "UPDATE users SET full_name = %s, email = %s, password = %s, role = %s WHERE user_id = %s",
-                (full_name, email, password, role, user_id)
+                (full_name, email, hashed_password, role, user_id)
             )
         else:
             cursor.execute(
