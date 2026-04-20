@@ -97,22 +97,22 @@ export const getFamilyStudents = async () => {
 };
 
 export const getFamilyStudentProgress = async (studentId) => {
-  const response = await api.get(`/api/family/students/${studentId}/progress`);
+  const response = await api.get(`/api/family/student/${studentId}/progress`);
   return response.data;
 };
 
 export const getFamilyStudentGaps = async (studentId) => {
-  const response = await api.get(`/api/family/students/${studentId}/gaps`);
+  const response = await api.get(`/api/family/student/${studentId}/gaps`);
   return response.data;
 };
 
 export const getFamilyStudentRecommendations = async (studentId) => {
-  const response = await api.get(`/api/family/students/${studentId}/recommendations`);
+  const response = await api.get(`/api/family/student/${studentId}/recommendations`);
   return response.data;
 };
 
 export const getStudentReport = async (studentId) => {
-  const response = await api.get(`/api/family/students/${studentId}/report`, {
+  const response = await api.get(`/api/family/student/${studentId}/report`, {
     responseType: 'blob'
   });
   return response.data;
