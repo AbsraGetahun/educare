@@ -14,7 +14,7 @@ SMTP_USER = os.getenv('SMTP_USER', '')
 SMTP_PASSWORD = os.getenv('SMTP_PASSWORD', '')
 SMTP_FROM = os.getenv('SMTP_FROM', 'noreply@educare.com')
 
-EMAIL_MODE = os.getenv('EMAIL_MODE', 'console')
+EMAIL_MODE = os.getenv('EMAIL_MODE', 'smtp')
 
 def generate_verification_token():
     return uuid.uuid4().hex + uuid.uuid4().hex
@@ -97,8 +97,9 @@ def send_verification_email(email, full_name, token):
         return True
     
     if not SMTP_HOST or not SMTP_USER:
-        print(f"WARNING: Email not configured. Verification URL: {verification_url}")
-        return True
+        raise ValueError(
+            "SMTP credentials not configured. Set SMTP_HOST, SMTP_PORT, SMTP_USER, and SMTP_PASSWORD environment variables."
+        )
     
     try:
         msg = MIMEMultipart('alternative')
@@ -137,7 +138,9 @@ def send_welcome_email(email, full_name, role):
         return True
     
     if not SMTP_HOST or not SMTP_USER:
-        return True
+        raise ValueError(
+            "SMTP credentials not configured. Set SMTP_HOST, SMTP_PORT, SMTP_USER, and SMTP_PASSWORD environment variables."
+        )
     
     html_content = f"""
     <!DOCTYPE html>
