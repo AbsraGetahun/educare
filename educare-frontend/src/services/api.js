@@ -357,4 +357,23 @@ export const generatePracticeMaterial = async (topicName, studentId, difficulty 
   return response.data;
 };
 
+// Topic-based Material Generation API (no student_id required)
+export const generateMaterialByTopic = async (topicName, gradeLevel, difficulty = 'medium') => {
+  const response = await api.post('/api/materials/generate-by-topic', {
+    topic_name: topicName,
+    grade_level: gradeLevel,
+    difficulty
+  });
+  return response.data;
+};
+
+// Curriculum search by topic API
+export const searchCurriculumByTopic = async (topicName, gradeLevel) => {
+  const response = await api.post('/api/curriculum/search-by-topic', {
+    topic_name: topicName,
+    grade_level: gradeLevel
+  });
+  return response.data;
+};
+
 export default api;
