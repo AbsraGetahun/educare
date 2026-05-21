@@ -38,7 +38,9 @@ CORS(app,
      origins=["http://localhost:3000", "http://127.0.0.1:3000"], 
      supports_credentials=True,
      methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-     allow_headers=["Content-Type", "Authorization", "Accept"],)
+     allow_headers=["Content-Type", "Authorization", "Accept", "X-Requested-With"],
+     expose_headers=["Content-Type", "Authorization"],
+     max_age=3600)
 
 # JWT Configuration
 app.config['JWT_SECRET_KEY'] = 'educare-secret-key'
@@ -478,6 +480,8 @@ def resend_verification():
         
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
+@app.route('/api/register', methods=['POST'])
 def register():
     try:
         from email_service import generate_verification_token, get_token_expiry, send_verification_email
@@ -2988,6 +2992,226 @@ def generate_practice_material():
         return jsonify({
             "material_id": material_id,
             "title": f"Practice: {topic_name}",
+            "source_citation": source_citation,
+            "questions_count": len(questions),
+            "preview": content_html[:500],
+            "message": "Material generated and sent for teacher approval"
+        }), 201
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/api/curriculum/search-by-topic', methods=['POST'])
+def search_curriculum_by_topic():
+    """
+    Part 2: Topic search endpoint for teacher material generation.
+    Accepts topic_name (e.g., "quadratic equations", "limits at infinity").
+    Searches FAISS index and returns top 5 most relevant curriculum chunks.
+    """
+    try:
+        data = request.get_json() or {}
+        topic_name = data.get('topic_name', '').strip()
+        grade_level = data.get('grade_level')
+
+        if not topic_name:
+            return jsonify({"error": "topic_name is required"}), 400
+
+        index_path = os.path.join('faiss_index', 'index.faiss')
+        vectorizer_path = os.path.join('faiss_index', 'vectorizer.pkl')
+        metadata_path = os.path.join('faiss_index', 'metadata.json')
+
+        results = []
+
+        try:
+            index = faiss.read_index(index_path)
+            with open(vectorizer_path, 'rb') as f:
+                vectorizer = pickle.load(f)
+            with open(metadata_path, 'r', encoding='utf-8') as f:
+                metadata = json.load(f)
+
+            query_vector = vectorizer.transform([topic_name]).toarray().astype('float32')
+            k = 5
+            distances, indices = index.search(query_vector, k)
+
+            for i, idx in enumerate(indices[0]):
+                if 0 <= idx < len(metadata):
+                    chunk = metadata[idx]
+                    result = {
+                        'rank': i + 1,
+                        'text': chunk.get('text', '')[:500],
+                        'source': chunk.get('source', 'curriculum'),
+                        'page': chunk.get('page', ''),
+                        'distance': float(distances[0][i])
+                    }
+                    if grade_level:
+                        result['grade_level'] = grade_level
+                    results.append(result)
+        except Exception as e:
+            return jsonify({"error": f"FAISS search failed: {str(e)}"}), 500
+
+        return jsonify({
+            "topic": topic_name,
+            "results": results,
+            "total_found": len(results)
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/api/materials/generate-by-topic', methods=['POST'])
+def generate_material_by_topic():
+    """
+    Part 3: Direct material generation endpoint.
+    Accepts topic_name, grade_level, difficulty.
+    Searches curriculum, generates explanations and questions.
+    Saves to material table with status='pending' (no student_id required).
+    """
+    try:
+        from question_generator import generate_questions
+        from curriculum_extractor import extract_content
+
+        data = request.get_json() or {}
+        topic_name = data.get('topic_name', '').strip()
+        grade_level = data.get('grade_level')
+        difficulty = data.get('difficulty', 'medium')
+
+        if not topic_name:
+            return jsonify({"error": "topic_name is required"}), 400
+
+        # Step 1: FAISS search for curriculum context
+        index_path = os.path.join('faiss_index', 'index.faiss')
+        vectorizer_path = os.path.join('faiss_index', 'vectorizer.pkl')
+        metadata_path = os.path.join('faiss_index', 'metadata.json')
+
+        curriculum_chunks = []
+        source_citation = f"Grade {grade_level or 12} Mathematics Curriculum - {topic_name}" if grade_level else f"Mathematics Curriculum - {topic_name}"
+
+        try:
+            index = faiss.read_index(index_path)
+            with open(vectorizer_path, 'rb') as f:
+                vectorizer = pickle.load(f)
+            with open(metadata_path, 'r', encoding='utf-8') as f:
+                metadata = json.load(f)
+
+            query_vector = vectorizer.transform([topic_name]).toarray().astype('float32')
+            distances, indices = index.search(query_vector, 3)
+
+            for i in indices[0]:
+                if 0 <= i < len(metadata):
+                    chunk = metadata[i]
+                    curriculum_chunks.append({
+                        'text': chunk.get('text', ''),
+                        'source': chunk.get('source', 'curriculum'),
+                        'page': chunk.get('page', '')
+                    })
+        except Exception:
+            pass  # FAISS unavailable - continue with questions only
+
+        # Step 2: Extract curriculum content
+        extracted = extract_content(curriculum_chunks)
+        if extracted['source_citation']:
+            source_citation = extracted['source_citation']
+
+        # Step 3: Generate questions
+        questions = generate_questions(topic_name, count=4, difficulty=difficulty)
+
+        # Step 4: Build HTML content
+        html_parts = []
+
+        if extracted['explanation']:
+            html_parts.append(
+                f'<div class="rag-explanation">'
+                f'<h3>Curriculum Overview</h3>'
+                f'<p>{extracted["explanation"]}</p>'
+                f'</div>'
+            )
+
+        if extracted['formulas']:
+            formulas_html = ''.join(f'<li><code>{f}</code></li>' for f in extracted['formulas'])
+            html_parts.append(
+                f'<div class="rag-formulas">'
+                f'<h3>Key Formulas</h3>'
+                f'<ul>{formulas_html}</ul>'
+                f'</div>'
+            )
+
+        if extracted['examples']:
+            examples_html = ''.join(f'<li>{e}</li>' for e in extracted['examples'])
+            html_parts.append(
+                f'<div class="rag-examples">'
+                f'<h3>Curriculum Examples</h3>'
+                f'<ul>{examples_html}</ul>'
+                f'</div>'
+            )
+
+        questions_html = []
+        for idx, q in enumerate(questions, 1):
+            opts_html = ''.join(
+                f'<li data-idx="{i}" class="rag-option">{chr(65+i)}. {opt}</li>'
+                for i, opt in enumerate(q['options'])
+            )
+            questions_html.append(
+                f'<div class="rag-question" data-correct="{q["correct_index"]}">'
+                f'<p><strong>Q{idx}.</strong> {q["question"]}</p>'
+                f'<ul class="rag-options">{opts_html}</ul>'
+                f'<div class="rag-answer" style="display:none">'
+                f'<strong>Answer: {q["correct_letter"]}</strong> — {q["explanation"]}'
+                f'</div>'
+                f'</div>'
+            )
+
+        html_parts.append(
+            f'<div class="rag-questions">'
+            f'<h3>Practice Questions</h3>'
+            + ''.join(questions_html) +
+            f'</div>'
+        )
+
+        content_html = '\n'.join(html_parts)
+
+        # Step 5: Look up or create topic_id
+        conn = get_db_connection()
+        cursor = conn.cursor()
+
+        cursor.execute(
+            "SELECT topic_id FROM topics WHERE LOWER(topic_name) LIKE %s LIMIT 1",
+            (f'%{topic_name.lower()}%',)
+        )
+        topic_row = cursor.fetchone()
+
+        if not topic_row:
+            cursor.execute(
+                "INSERT INTO topics (topic_name, grade_level) VALUES (%s, %s)",
+                (topic_name, grade_level or 12)
+            )
+            topic_id = cursor.lastrowid
+        else:
+            topic_id = topic_row[0]
+
+        if not topic_id:
+            cursor.close()
+            conn.close()
+            return jsonify({"error": "Failed to get or create topic"}), 500
+
+        # Step 6: Save to material table
+        cursor.execute("""
+            INSERT INTO material (topic_id, title, content, source_citation,
+                                  approval_status, generated_date)
+            VALUES (%s, %s, %s, %s, 'Pending', NOW())
+        """, (topic_id, f"Practice: {topic_name}", content_html, source_citation))
+
+        material_id = cursor.lastrowid
+        conn.commit()
+        cursor.close()
+        conn.close()
+
+        return jsonify({
+            "material_id": material_id,
+            "title": f"Practice: {topic_name}",
+            "topic_name": topic_name,
+            "grade_level": grade_level or 12,
+            "difficulty": difficulty,
             "source_citation": source_citation,
             "questions_count": len(questions),
             "preview": content_html[:500],
