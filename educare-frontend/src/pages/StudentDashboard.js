@@ -1,6 +1,7 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { getQuizzes, getApprovedMaterials, getProgressMap, getAvailableTopics, getStudentRecommendations, getCompletedQuizzes } from '../services/api';
+import { getQuizzes, getApprovedMaterials, getProgressMap, getAvailableTopics, getStudentRecommendations, getCompletedQuizzes, rateMaterial } from '../services/api';
+import StudentAssistant from '../components/StudentAssistant';
 
 // ── MaterialCard: renders RAG-generated HTML material with interactive questions ──
 function MaterialCard({ material }) {
@@ -41,22 +42,27 @@ function MaterialCard({ material }) {
       {/* Header */}
       <div className="p-4 border-b border-gray-100">
         <div className="flex justify-between items-start">
-          <div>
-            <h3 className="text-sm font-semibold text-gray-900">{material.title}</h3>
-            <div className="flex items-center gap-2 mt-1">
-              <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-blue-100 text-blue-700 font-medium">
-                {material.topic_name}
-              </span>
-              <span className="text-[10px] text-gray-400">
-                {new Date(material.generated_date).toLocaleDateString()}
-              </span>
-              {completed && (
-                <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-green-100 text-green-700 font-medium">
-                  ✓ Completed
+            <div>
+              <h3 className="text-sm font-semibold text-gray-900">{material.title}</h3>
+              <div className="flex items-center gap-2 mt-1 flex-wrap">
+                <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-blue-100 text-blue-700 font-medium">
+                  {material.topic_name}
                 </span>
-              )}
+                {material.source_grade && (
+                  <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-purple-100 text-purple-700 font-medium">
+                    Grade {material.source_grade}
+                  </span>
+                )}
+                <span className="text-[10px] text-gray-400">
+                  {new Date(material.generated_date).toLocaleDateString()}
+                </span>
+                {completed && (
+                  <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-green-100 text-green-700 font-medium">
+                    ✓ Completed
+                  </span>
+                )}
+              </div>
             </div>
-          </div>
           {!completed && (
             <button
               onClick={() => setCompleted(true)}
@@ -66,8 +72,23 @@ function MaterialCard({ material }) {
             </button>
           )}
         </div>
-        {material.source_citation && (
-          <p className="text-[10px] text-gray-400 italic mt-1">Source: {material.source_citation}</p>
+        {/* Source tracking section */}
+        {(material.source_file || material.source_citation) && (
+          <div className="px-4 border-b border-gray-100 bg-gray-50 py-2">
+            {material.source_file && (
+              <div className="flex items-center gap-2 mb-1">
+                <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-emerald-100 text-emerald-700 font-medium">
+                  {material.source_file}
+                </span>
+                {material.source_page && (
+                  <span className="text-[10px] text-gray-500">Page {material.source_page}</span>
+                )}
+              </div>
+            )}
+            {material.source_citation && !material.source_file && (
+              <p className="text-[10px] text-gray-400 italic">Source: {material.source_citation}</p>
+            )}
+          </div>
         )}
       </div>
 
@@ -130,7 +151,56 @@ function StudentDashboard() {
   const [activeTab, setActiveTab] = useState('progress');
   const navigate = useNavigate();
   const fullName = localStorage.getItem('full_name');
+
+  // Practice mode state
+  const [practiceQuestions, setPracticeQuestions] = useState([]);
+  const [practiceAnswers, setPracticeAnswers] = useState({});
+  const [practiceResult, setPracticeResult] = useState(null);
+  const [practiceIdx, setPracticeIdx] = useState(0);
+  const [practiceMode, setPracticeMode] = useState(null);
+
+  // Rating state
+  const [ratingFeedback, setRatingFeedback] = useState({});
   const userId = localStorage.getItem('user_id');
+
+  // ── Rating ─────────────────────────────────────────────────────
+  const handleRateMaterial = async (materialId, isHelpful) => {
+    try {
+      await rateMaterial(materialId, isHelpful ? 'helpful' : 'not_helpful', parseInt(userId));
+      setRatingFeedback(prev => ({ ...prev, [materialId]: isHelpful ? 'helpful' : 'not_helpful' }));
+    } catch (err) {
+      console.error('Rating failed:', err);
+    }
+  };
+
+  // Practice Mode
+  const startPracticeMode = (material) => {
+    const parser = new DOMParser();
+    const doc  = parser.parseFromString(material.content, 'text/html');
+    const qDivs = doc.querySelectorAll('.rag-question');
+    if (qDivs.length === 0) return;
+    const questions = Array.from(qDivs).map((div, i) => ({
+      idx: i,
+      correctIdx: parseInt(div.getAttribute('data-correct') || '0'),
+      options: Array.from(div.querySelectorAll('.rag-option')).map(li => li.textContent),
+      explanation: div.querySelector('.rag-answer')?.textContent || 'No explanation available.',
+    }));
+    setPracticeQuestions(questions);
+    setPracticeAnswers({});
+    setPracticeResult(null);
+    setPracticeIdx(0);
+    setPracticeMode({ ...material });
+  };
+
+  const submitPractice = () => {
+    let correct = 0;
+    practiceQuestions.forEach((q, i) => {
+      if (practiceAnswers[i] === q.correctIdx) correct++;
+    });
+    setPracticeResult({ correct, total: practiceQuestions.length, pct: Math.round((correct / practiceQuestions.length) * 100) });
+  };
+
+  const closePractice = () => { setPracticeMode(null); setPracticeQuestions([]); setPracticeAnswers({}); setPracticeResult(null); setPracticeIdx(0); };
 
   useEffect(() => {
     const fetchData = async () => {
@@ -492,9 +562,43 @@ function StudentDashboard() {
             <h2 className="text-xl font-bold text-gray-900 mb-3">Study Materials</h2>
             {materials.length > 0 ? (
               <div className="space-y-6">
-                {materials.map((material) => (
-                  <MaterialCard key={material.material_id} material={material} />
-                ))}
+                {materials.map((material) => {
+                  const fb = ratingFeedback[material.material_id];
+                  return (
+                  <div key={material.material_id}>
+                    <MaterialCard material={material} />
+                    {/* Practice & Rating bar */}
+                    <div className="flex items-center gap-3 mt-2 ml-1">
+                      <button
+                        onClick={() => startPracticeMode(material)}
+                        className="px-3 py-1.5 text-xs rounded-md font-medium text-white flex items-center gap-1 hover:opacity-90"
+                        style={{ backgroundColor: '#7c3aed' }}
+                      >
+                        <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z"/><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+                        Practice Mode
+                      </button>
+                      <span className="text-xs text-gray-400">Rate this material:</span>
+                      <button
+                        onClick={() => handleRateMaterial(material.material_id, true)}
+                        className={`px-2 py-1 text-xs rounded border transition ${
+                          fb === 'helpful' ? 'bg-green-50 border-green-300 text-green-700' : 'border-gray-300 text-gray-500 hover:bg-green-50'
+                        }`}
+                        title="Helpful"
+                      >
+                        👍 Helpful
+                      </button>
+                      <button
+                        onClick={() => handleRateMaterial(material.material_id, false)}
+                        className={`px-2 py-1 text-xs rounded border transition ${
+                          fb === 'not_helpful' ? 'bg-red-50 border-red-300 text-red-700' : 'border-gray-300 text-gray-500 hover:bg-red-50'
+                        }`}
+                        title="Not helpful"
+                      >
+                        👎 Not Helpful
+                      </button>
+                    </div>
+                  </div>
+                )})}
               </div>
             ) : (
               <div className="bg-white rounded-lg shadow-sm p-8 text-center">
@@ -505,7 +609,122 @@ function StudentDashboard() {
           </div>
         )}
       </div>
-    </div>
+
+      {/* ── Practice Mode Modal ───────────────────────────────────── */}
+      {practiceMode && practiceQuestions.length > 0 && (
+        <div className="fixed inset-0 bg-black bg-opacity-60 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg max-h-[80vh] overflow-y-auto">
+            <div className="p-4 border-b flex justify-between items-center">
+              <div>
+                <h2 className="font-bold text-gray-900">Practice Mode</h2>
+                <p className="text-xs text-gray-500">Question {practiceIdx + 1} of {practiceQuestions.length}</p>
+              </div>
+              <button onClick={closePractice} className="text-gray-400 hover:text-gray-600 text-xl leading-none">&times;</button>
+            </div>
+
+            {practiceResult ? (
+              <div className="p-6 text-center">
+                <div className={`w-20 h-20 mx-auto mb-4 rounded-full flex items-center justify-center text-2xl font-bold ${
+                  practiceResult.pct >= 70 ? 'bg-green-100 text-green-700' :
+                  practiceResult.pct >= 40 ? 'bg-yellow-100 text-yellow-700' :
+                  'bg-red-100 text-red-700'
+                }`}>
+                  {practiceResult.pct}%
+                </div>
+                <p className="text-lg font-semibold mb-1">
+                  {practiceResult.correct}/{practiceResult.total} correct
+                </p>
+                <p className="text-sm text-gray-500 mb-4">
+                  {practiceResult.pct >= 70 ? 'Excellent work!' :
+                   practiceResult.pct >= 40 ? 'Good effort! Keep practicing.' :
+                   'Keep studying — you\'ll get better!'}
+                </p>
+                <div className="space-y-2 mb-4 text-left">
+                  {practiceQuestions.map((q, i) => {
+                    const picked = practiceAnswers[i];
+                    const correct = picked === q.correctIdx;
+                    return (
+                      <div key={i} className={`border rounded-lg p-3 ${correct ? 'border-green-200 bg-green-50' : 'border-red-200 bg-red-50'}`}>
+                        <p className="text-sm font-medium mb-1">Q{i + 1}. {q.options[0].substring(0, 60)}…</p>
+                        <p className="text-xs text-gray-600">
+                          Your answer: {picked !== undefined ? String.fromCharCode(65 + picked) : '—'} ·
+                          Correct: {String.fromCharCode(65 + q.correctIdx)}
+                        </p>
+                        {q.explanation && <p className="text-xs text-gray-500 mt-1 italic">{q.explanation.substring(0, 120)}</p>}
+                      </div>
+                    );
+                  })}
+                </div>
+                <button onClick={closePractice} className="px-5 py-2 bg-blue-600 text-white rounded-lg font-medium hover:bg-blue-700 transition">
+                  Done
+                </button>
+              </div>
+            ) : (
+              (() => {
+                const q = practiceQuestions[practiceIdx];
+                if (!q) return null;
+                return (
+                  <div className="p-6">
+                    <div className="mb-4">
+                      <p className="text-base font-medium text-gray-900 mb-3">
+                        Q{practiceIdx + 1}. (from "{practiceMode.title}")
+                      </p>
+                      <div className="space-y-2">
+                        {q.options.map((opt, i) => (
+                          <button
+                            key={i}
+                            onClick={() => setPracticeAnswers(prev => ({ ...prev, [practiceIdx]: i }))}
+                            className={`w-full text-left px-4 py-3 rounded-lg border text-sm transition ${
+                              practiceAnswers[practiceIdx] === i
+                                ? 'border-blue-400 bg-blue-50 text-blue-900'
+                                : 'border-gray-200 hover:border-gray-400 text-gray-700'
+                            }`}
+                          >
+                            {String.fromCharCode(65 + i)}. {opt}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                    <div className="flex justify-between">
+                      <button
+                        onClick={() => setPracticeIdx(Math.max(0, practiceIdx - 1))}
+                        disabled={practiceIdx === 0}
+                        className="px-4 py-2 text-sm rounded-md disabled:opacity-40 hover:bg-gray-100"
+                      >
+                        ← Previous
+                      </button>
+                      <span className="text-xs text-gray-400 self-center">{practiceIdx + 1} / {practiceQuestions.length}</span>
+                      {practiceIdx === practiceQuestions.length - 1 ? (
+                        <button
+                          onClick={submitPractice}
+                          disabled={practiceAnswers[practiceIdx] === undefined}
+                          className="px-4 py-2 text-sm rounded-md text-white disabled:opacity-50"
+                          style={{ backgroundColor: '#2563eb' }}
+                        >
+                          Submit
+                        </button>
+                      ) : (
+                        <button
+                          onClick={() => setPracticeIdx(practiceIdx + 1)}
+                          className="px-4 py-2 text-sm rounded-md text-white hover:bg-blue-700"
+                          style={{ backgroundColor: '#2563eb' }}
+                        >
+                          Next →
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                );
+              })()
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* AI Learning Assistant */}
+      <StudentAssistant studentId={parseInt(userId)} fullName={fullName} />
+      </div>
+    
   );
 }
 

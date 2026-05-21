@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
-import { register, resendVerification } from '../services/api';
+import { register, resendVerification, rateLimitRemaining } from '../services/api';
 
 function StudentRegister() {
   const [fullName, setFullName] = useState('');
@@ -12,6 +12,7 @@ function StudentRegister() {
   const [success, setSuccess] = useState(false);
   const [loading, setLoading] = useState(false);
   const [resending, setResending] = useState(false);
+  const [rateInfo, setRateInfo] = useState(null);
   const navigate = useNavigate();
 
   const handleSubmit = async (e) => {
@@ -20,14 +21,22 @@ function StudentRegister() {
     setLoading(true);
 
     try {
-      await register({
+      const data = await register({
         full_name: fullName,
         email,
         password,
         grade_level: gradeLevel,
         section
       });
-      setSuccess(true);
+      if (data.requires_verification) {
+        setSuccess(true);
+        try {
+          const rl = await rateLimitRemaining(email);
+          setRateInfo(rl.remaining);
+        } catch {}
+      } else {
+        navigate('/student/login');
+      }
     } catch (err) {
       setError(err.response?.data?.error || 'Registration failed');
     } finally {
@@ -38,7 +47,11 @@ function StudentRegister() {
   const handleResendVerification = async () => {
     setResending(true);
     try {
-      await resendVerification(email);
+      await resendVerification(email.trim());
+      try {
+        const rl = await rateLimitRemaining(email.trim());
+        setRateInfo(rl.remaining);
+      } catch {}
       alert('Verification email sent! Please check your inbox.');
     } catch (err) {
       alert(err.response?.data?.error || 'Failed to resend verification email');
@@ -88,6 +101,13 @@ function StudentRegister() {
                   {resending ? 'Sending...' : 'Resend email'}
                 </button>
               </p>
+              {rateInfo !== null && (
+                <p className="text-xs text-gray-400 mb-4">
+                  {rateInfo > 0
+                    ? `${rateInfo} verification email(s) remaining this hour.`
+                    : 'Rate limit reached. Try again in one hour.'}
+                </p>
+              )}
               <Link to="/student/login" className="text-blue-600 hover:text-blue-700 font-medium">
                 Go to Login
               </Link>
@@ -110,64 +130,64 @@ function StudentRegister() {
                   placeholder="John Doe"
                   required
                 />
-            </div>
-            
-            <div className="mb-6">
-              <label className="block text-gray-700 text-sm font-semibold mb-2">Email Address</label>
-              <input
-                type="email"
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-                className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition"
-                placeholder="student@educare.com"
-                required
-              />
-            </div>
-            
-            <div className="mb-6">
-              <label className="block text-gray-700 text-sm font-semibold mb-2">Password</label>
-              <input
-                type="password"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition"
-                placeholder="••••••••"
-                required
-              />
-            </div>
-            
-            <div className="mb-6">
-              <label className="block text-gray-700 text-sm font-semibold mb-2">Grade Level</label>
-              <select
-                value={gradeLevel}
-                onChange={(e) => setGradeLevel(e.target.value)}
-                className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition"
-                required
-              >
-                <option value="">Select Grade</option>
-                <option value="9">Grade 9</option>
-                <option value="10">Grade 10</option>
-                <option value="11">Grade 11</option>
-                <option value="12">Grade 12</option>
-              </select>
-            </div>
-            
-            <div className="mb-6">
-              <label className="block text-gray-700 text-sm font-semibold mb-2">Section</label>
-              <input
-                type="text"
-                value={section}
-                onChange={(e) => setSection(e.target.value)}
-                className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition"
-                placeholder="A"
-                required
-              />
-            </div>
-            
-            <button
-              type="submit"
-              disabled={loading}
-className="w-full bg-blue-600 text-white py-3 rounded-lg font-semibold hover:bg-blue-700 transition disabled:opacity-50 disabled:cursor-not-allowed shadow-lg"
+              </div>
+              
+              <div className="mb-6">
+                <label className="block text-gray-700 text-sm font-semibold mb-2">Email Address</label>
+                <input
+                  type="email"
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                  className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition"
+                  placeholder="student@educare.com"
+                  required
+                />
+              </div>
+              
+              <div className="mb-6">
+                <label className="block text-gray-700 text-sm font-semibold mb-2">Password</label>
+                <input
+                  type="password"
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition"
+                  placeholder="••••••••"
+                  required
+                />
+              </div>
+              
+              <div className="mb-6">
+                <label className="block text-gray-700 text-sm font-semibold mb-2">Grade Level</label>
+                <select
+                  value={gradeLevel}
+                  onChange={(e) => setGradeLevel(e.target.value)}
+                  className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition"
+                  required
+                >
+                  <option value="">Select Grade</option>
+                  <option value="9">Grade 9</option>
+                  <option value="10">Grade 10</option>
+                  <option value="11">Grade 11</option>
+                  <option value="12">Grade 12</option>
+                </select>
+              </div>
+              
+              <div className="mb-6">
+                <label className="block text-gray-700 text-sm font-semibold mb-2">Section</label>
+                <input
+                  type="text"
+                  value={section}
+                  onChange={(e) => setSection(e.target.value)}
+                  className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition"
+                  placeholder="A"
+                  required
+                />
+              </div>
+              
+              <button
+                type="submit"
+                disabled={loading}
+                className="w-full bg-blue-600 text-white py-3 rounded-lg font-semibold hover:bg-blue-700 transition disabled:opacity-50 disabled:cursor-not-allowed shadow-lg"
               >
                 {loading ? 'Creating account...' : 'Create Account'}
               </button>

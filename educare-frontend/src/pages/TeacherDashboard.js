@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { getQuizzes, getStudents, getStudentGaps, getQuizResults, createQuiz, updateQuiz, deleteQuiz, getPendingMaterials, approveMaterial, rejectMaterial, getTeacherMasteryOverview, getHeatmap, searchCurriculum, generatePracticeMaterial, generateMaterialByTopic, searchCurriculumByTopic } from '../services/api';
+import { getQuizzes, getStudents, getStudentGaps, getQuizResults, createQuiz, updateQuiz, deleteQuiz, getPendingMaterials, approveMaterial, rejectMaterial, getTeacherMasteryOverview, getHeatmap, searchCurriculum, generatePracticeMaterial, generateMaterialByTopic, searchCurriculumByTopic, generateAIQuiz, getMaterialsAnalytics, getCurriculumTopics, generateBatchMaterials } from '../services/api';
 
 function TeacherDashboard() {
   const [activeTab, setActiveTab] = useState('overview');
@@ -65,8 +65,110 @@ function TeacherDashboard() {
     option_d: '',
     correct_answer: 'A'
   });
+  // AI Quiz Generation state
+  const [showAIQuizModal, setShowAIQuizModal] = useState(false);
+  const [aiQuizTopic, setAiQuizTopic] = useState('');
+  const [aiQuizGrade, setAiQuizGrade] = useState('10');
+  const [aiQuizNumQ, setAiQuizNumQ] = useState(5);
+  const [aiQuizDiff, setAiQuizDiff] = useState('medium');
+  const [aiQuizSuggestions, setAiQuizSuggestions] = useState([]);
+  const [aiQuizLoading, setAiQuizLoading] = useState(false);
+  const [aiQuizResult, setAiQuizResult] = useState(null);
+  const [aiQuizError, setAiQuizError] = useState('');
+  const [topicSuggestionVisible, setTopicSuggestionVisible] = useState(false);
+  // Analytics state
+  const [analyticsData, setAnalyticsData] = useState(null);
+  const [analyticsLoading, setAnalyticsLoading] = useState(false);
+  // Batch generation state
+  const [batchGrade, setBatchGrade] = useState('10');
+  const [batchDiff, setBatchDiff] = useState('medium');
+  const [batchLoading, setBatchLoading] = useState(false);
+  const [batchResult, setBatchResult] = useState(null);
   const navigate = useNavigate();
   const fullName = localStorage.getItem('full_name');
+
+  // ── Topic autocomplete ────────────────────────────────────────
+  const handleTopicInputChange = async (val) => {
+    setAiQuizTopic(val);
+    setAiQuizError('');
+    if (val.trim().length >= 2) {
+      try {
+        const d = await getCurriculumTopics(val.trim());
+        setAiQuizSuggestions(d.topics || []);
+      } catch {
+        setAiQuizSuggestions([]);
+      }
+    } else {
+      setAiQuizSuggestions([]);
+    }
+  };
+
+  const selectSuggestion = (s) => {
+    setAiQuizTopic(s.topic);
+    setAiQuizSuggestions([]);
+  };
+
+  // ── AI Quiz Generation ────────────────────────────────────────
+  const handleGenerateAIQuiz = async () => {
+    if (!aiQuizTopic.trim()) return;
+    setAiQuizLoading(true);
+    setAiQuizError('');
+    setAiQuizResult(null);
+    try {
+      const q = aiQuizTopic.toLowerCase();
+      let grade = aiQuizGrade;
+      if (['probability', 'statistics', 'matrix'].some(t => q.includes(t))) {
+        grade = '12';
+      } else if (q.includes('trig') || q.includes('geometry')) {
+        grade = '11';
+      }
+      const data = await generateAIQuiz({
+        topic:         aiQuizTopic,
+        grade_level:   parseInt(grade),
+        num_questions: aiQuizNumQ,
+        difficulty:    aiQuizDiff,
+      });
+      setAiQuizResult(data);
+      setShowAIQuizModal(false);
+      alert(`AI Quiz generated: "${data.title}" with ${data.num_questions} questions.`);
+      fetchData();
+    } catch (err) {
+      setAiQuizError(err.response?.data?.error || 'Failed to generate quiz');
+    } finally {
+      setAiQuizLoading(false);
+    }
+  };
+
+  // ── Load analytics ────────────────────────────────────────────
+  const loadAnalytics = async () => {
+    setAnalyticsLoading(true);
+    try {
+      const data = await getMaterialsAnalytics();
+      setAnalyticsData(data);
+    } catch {
+      setAnalyticsData(null);
+    } finally {
+      setAnalyticsLoading(false);
+    }
+  };
+
+  // ── Batch Material Generation ─────────────────────────────────
+  const handleBatchGenerate = async () => {
+    setBatchLoading(true);
+    setBatchResult(null);
+    try {
+      const data = await generateBatchMaterials({
+        grade_level: parseInt(batchGrade),
+        difficulty:  batchDiff,
+      });
+      setBatchResult(data);
+      alert(`Batch complete: ${data.generated} materials generated in ${data.message}`);
+    } catch (err) {
+      alert('Batch generation failed: ' + (err.response?.data?.error || err.message));
+    } finally {
+      setBatchLoading(false);
+    }
+  };
 
   useEffect(() => {
     fetchData();
@@ -310,7 +412,9 @@ function TeacherDashboard() {
           .map((r, i) =>
             `<div class="mb-2 p-2 border rounded" style="border-color:#e5e7eb">
               <span class="font-semibold text-sm">Result ${i + 1}</span>
-              <span class="text-xs text-gray-500 ml-2">(${r.source} p.${r.page || '?'})</span>
+              <span class="text-[10px] px-1.5 py-0.5 rounded-full bg-emerald-100 text-emerald-700 font-medium ml-2">${r.source_file || r.source || 'curriculum'}</span>
+              ${r.source_grade ? `<span class="text-[10px] px-1.5 py-0.5 rounded-full bg-purple-100 text-purple-700 font-medium ml-1">Grade ${r.source_grade}</span>` : ''}
+              <span class="text-xs text-gray-500 ml-2">p.${r.source_page || r.page || '?'}</span>
               <p class="text-xs mt-1">${r.text}</p>
             </div>`
           )
@@ -488,6 +592,17 @@ function TeacherDashboard() {
             >
               Pending Approvals ({pendingMaterials.length})
             </button>
+            <button
+              onClick={() => { setActiveTab('analytics'); loadAnalytics(); }}
+              className={`py-2 px-4 text-sm font-medium transition ${
+                activeTab === 'analytics'
+                  ? 'border-b-2'
+                  : 'text-gray-500 hover:text-gray-700'
+              }`}
+              style={activeTab === 'analytics' ? { borderColor: '#2563eb', color: '#2563eb' } : {}}
+            >
+              Analytics
+            </button>
           </div>
         </div>
       </div>
@@ -500,593 +615,187 @@ function TeacherDashboard() {
           </div>
         )}
 
-        {/* Overview Tab */}
-        {activeTab === 'overview' && (
+        {/* Analytics Tab */}
+        {activeTab === 'analytics' && (
           <div>
-            <h2 className="text-xl font-bold mb-4">Class Overview</h2>
-            
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-4">
-              <div className="bg-white rounded-lg shadow-sm p-4" style={{ backgroundColor: '#ffffff' }}>
-                <div className="text-2xl font-bold" style={{ color: '#2563eb' }}>{students.length}</div>
-                <div className="text-xs text-gray-500 uppercase">Total Students</div>
-              </div>
-              <div className="bg-white rounded-lg shadow-sm p-4" style={{ backgroundColor: '#ffffff' }}>
-                <div className="text-2xl font-bold" style={{ color: '#10b981' }}>{quizzes.length}</div>
-                <div className="text-xs text-gray-500 uppercase">Active Quizzes</div>
-              </div>
-              <div className="bg-white rounded-lg shadow-sm p-4" style={{ backgroundColor: '#ffffff' }}>
-                <div className="text-2xl font-bold" style={{ color: '#f59e0b' }}>{pendingMaterials.length}</div>
-                <div className="text-xs text-gray-500 uppercase">Pending Approvals</div>
-              </div>
-            </div>
-
-            {/* Quick Mastery Summary */}
-            <div className="bg-white rounded-lg shadow-sm p-4 mb-4" style={{ backgroundColor: '#ffffff' }}>
-              <h3 className="text-base font-semibold mb-3">Topic Mastery Summary</h3>
-              <div className="overflow-x-auto">
-                <table className="w-full text-sm">
-                  <thead>
-                    <tr className="border-b">
-                      <th className="text-left py-2">Topic</th>
-                      <th className="text-left py-2">Grade</th>
-                      <th className="text-left py-2">Mastery %</th>
-                      <th className="text-left py-2">Mastered</th>
-                      <th className="text-left py-2">Status</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {masteryOverview.map((topic) => (
-                      <tr key={topic.topic_id} className="border-b even:bg-gray-50">
-                        <td className="py-2">{topic.topic_name}</td>
-                        <td className="py-2">{topic.grade_level}</td>
-                        <td className="py-2">
-                          <div className="flex items-center gap-2">
-                            <div className="w-24 bg-gray-200 rounded-full h-2">
-                              <div
-                                className="h-2 rounded-full"
-                                style={{ width: `${topic.mastery_pct}%`, backgroundColor: topic.mastery_pct >= 70 ? '#10b981' : topic.mastery_pct >= 40 ? '#f59e0b' : '#ef4444' }}
-                              ></div>
-                            </div>
-                            <span className="text-sm">{topic.mastery_pct}%</span>
-                          </div>
-                        </td>
-                        <td className="py-2">{topic.mastered_count}/{topic.total_students}</td>
-                        <td className="py-2">
-                          <span className={`px-2 py-1 rounded text-xs ${
-                            topic.mastery_pct >= 70 ? 'bg-green-100 text-green-800' :
-                            topic.mastery_pct >= 40 ? 'bg-yellow-100 text-yellow-800' :
-                            'bg-red-100 text-red-800'
-                          }`}>
-                            {topic.mastery_pct >= 70 ? 'Good' : topic.mastery_pct >= 40 ? 'Needs Attention' : 'Critical'}
-                          </span>
-                        </td>
-                      </tr>
-                    ))}
-                    {masteryOverview.length === 0 && (
-                      <tr>
-                        <td colSpan="5" className="py-8 text-center text-gray-500">No topic data available</td>
-                      </tr>
-                    )}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          </div>
-        )}
-
-        {/* Mastery Tracker Tab */}
-        {activeTab === 'mastery' && (
-          <div>
-            <h2 className="text-xl font-bold mb-2">Mastery Tracker</h2>
-            <p className="text-gray-600 mb-3 text-sm">Click on a topic to view students who need remediation or are blocked by prerequisites.</p>
-
-            <div className="space-y-3">
-              {masteryOverview.map((topic) => (
-                <div key={topic.topic_id} className="bg-white rounded-lg shadow-sm overflow-hidden" style={{ backgroundColor: '#ffffff' }}>
-                  <button
-                    onClick={() => setExpandedTopic(expandedTopic === topic.topic_id ? null : topic.topic_id)}
-                    className="w-full p-3 flex justify-between items-center hover:bg-gray-50 transition"
-                  >
-                    <div className="flex items-center gap-3">
-                      <div className="w-10 h-10 rounded-lg flex items-center justify-center text-white font-bold text-sm"
-                        style={{ backgroundColor: topic.mastery_pct >= 70 ? '#10b981' : topic.mastery_pct >= 40 ? '#f59e0b' : '#ef4444' }}>
-                        {topic.mastery_pct}%
-                      </div>
-                      <div className="text-left">
-                        <h3 className="font-medium text-sm">{topic.topic_name}</h3>
-                        <p className="text-xs text-gray-500">Grade {topic.grade_level} - {topic.mastered_count} of {topic.total_students} students mastered</p>
-                      </div>
-                    </div>
-                    <div className="flex items-center gap-2">
-                      {topic.struggling_students.length > 0 && (
-                        <span className="bg-red-100 text-red-800 px-2 py-0.5 rounded text-xs">
-                          {topic.struggling_students.length} struggling
-                        </span>
-                      )}
-                      {topic.blocked_students.length > 0 && (
-                        <span className="bg-gray-100 text-gray-800 px-2 py-0.5 rounded text-xs">
-                          {topic.blocked_students.length} blocked
-                        </span>
-                      )}
-                      <span className="text-gray-400 text-xs">{expandedTopic === topic.topic_id ? '▲' : '▼'}</span>
-                    </div>
-                  </button>
-
-                  {expandedTopic === topic.topic_id && (
-                    <div className="border-t p-3 bg-gray-50">
-                      <div className="mb-3">
-                        <div className="flex justify-between text-xs mb-1">
-                          <span>Class Mastery</span>
-                          <span>{topic.mastered_count}/{topic.total_students} students ({topic.mastery_pct}%)</span>
-                        </div>
-                        <div className="w-full bg-gray-200 rounded-full h-2">
-                          <div
-                            className="h-2 rounded-full"
-                            style={{ width: `${topic.mastery_pct}%`, backgroundColor: topic.mastery_pct >= 70 ? '#10b981' : topic.mastery_pct >= 40 ? '#f59e0b' : '#ef4444' }}
-                          ></div>
-                        </div>
-                      </div>
-
-                      <div className="grid md:grid-cols-2 gap-3">
-                        <div>
-                          <h4 className="font-medium mb-2 text-red-700 text-sm">Needs Remediation</h4>
-                          {topic.struggling_students.length > 0 ? (
-                            <div className="space-y-1">
-                              {topic.struggling_students.map((student) => (
-                                <div key={student.student_id} className="flex justify-between items-center bg-white rounded p-2 border text-sm">
-                                  <span>{student.full_name}</span>
-                                  <span className="text-red-600 font-medium">{student.avg_score}%</span>
-                                </div>
-                              ))}
-                            </div>
-                          ) : (
-                            <p className="text-sm text-gray-500 bg-white rounded p-2 border">No struggling students</p>
-                          )}
-                        </div>
-
-                        <div>
-                          <h4 className="font-medium mb-2 text-gray-700 text-sm">Blocked by Prerequisites</h4>
-                          {topic.blocked_students.length > 0 ? (
-                            <div className="space-y-1">
-                              {topic.blocked_students.map((student) => (
-                                <div key={student.student_id} className="flex justify-between items-center bg-white rounded p-2 border text-sm">
-                                  <span>{student.full_name}</span>
-                                  <span className="text-gray-500">Not started</span>
-                                </div>
-                              ))}
-                            </div>
-                          ) : (
-                            <p className="text-sm text-gray-500 bg-white rounded p-2 border">No blocked students</p>
-                          )}
-                        </div>
-                      </div>
-                    </div>
-                  )}
-                </div>
-              ))}
-
-              {masteryOverview.length === 0 && (
-                <div className="bg-white rounded-lg shadow-sm p-8 text-center">
-                  <p className="text-gray-500">No mastery data available</p>
-                </div>
-              )}
-            </div>
-          </div>
-        )}
-
-        {/* Gap Heatmap Tab */}
-        {activeTab === 'heatmap' && (
-          <div>
-            <h2 className="text-xl font-bold mb-2">Class-wide Gap Heatmap</h2>
-            <p className="text-gray-600 mb-3 text-sm">Visual overview of class performance across all topics. Click a topic to view struggling students.</p>
-
-            <div className="flex flex-wrap gap-3 mb-4">
-              <div>
-                <label className="block text-xs font-medium text-gray-700 mb-1">Filter by Grade</label>
-                <select
-                  value={heatmapGradeFilter}
-                  onChange={(e) => setHeatmapGradeFilter(e.target.value)}
-                  className="border rounded px-2 py-1.5 text-sm focus:outline-none focus:ring-2"
-                  style={{ borderColor: '#d1d5db' }}
-                >
-                  <option value="all">All Grades</option>
-                  {[...new Set(heatmapData.map(t => t.grade_level))].sort().map(g => (
-                    <option key={g} value={g}>Grade {g}</option>
-                  ))}
-                </select>
-              </div>
-              <div>
-                <label className="block text-xs font-medium text-gray-700 mb-1">Sort by</label>
-                <select
-                  value={heatmapSort}
-                  onChange={(e) => setHeatmapSort(e.target.value)}
-                  className="border rounded px-2 py-1.5 text-sm focus:outline-none focus:ring-2"
-                  style={{ borderColor: '#d1d5db' }}
-                >
-                  <option value="mastery">Mastery % (Low to High)</option>
-                  <option value="mastery_desc">Mastery % (High to Low)</option>
-                  <option value="name">Topic Name (A-Z)</option>
-                  <option value="grade">Grade Level</option>
-                </select>
-              </div>
-            </div>
-
-            <div className="flex gap-4 mb-4 flex-wrap">
-              <div className="flex items-center gap-1.5">
-                <div className="w-3 h-3 rounded" style={{ backgroundColor: '#10b981' }}></div>
-                <span className="text-xs text-gray-600">Good (70%+)</span>
-              </div>
-              <div className="flex items-center gap-1.5">
-                <div className="w-3 h-3 rounded" style={{ backgroundColor: '#f59e0b' }}></div>
-                <span className="text-xs text-gray-600">Needs Attention (40-69%)</span>
-              </div>
-              <div className="flex items-center gap-1.5">
-                <div className="w-3 h-3 rounded" style={{ backgroundColor: '#ef4444' }}></div>
-                <span className="text-xs text-gray-600">Critical (below 40%)</span>
-              </div>
-            </div>
-
-            {(() => {
-              let filtered = [...heatmapData];
-              if (heatmapGradeFilter !== 'all') {
-                filtered = filtered.filter(t => t.grade_level === parseInt(heatmapGradeFilter));
-              }
-              if (heatmapSort === 'mastery') {
-                filtered.sort((a, b) => a.mastery_percentage - b.mastery_percentage);
-              } else if (heatmapSort === 'mastery_desc') {
-                filtered.sort((a, b) => b.mastery_percentage - a.mastery_percentage);
-              } else if (heatmapSort === 'name') {
-                filtered.sort((a, b) => a.topic_name.localeCompare(b.topic_name));
-              } else if (heatmapSort === 'grade') {
-                filtered.sort((a, b) => a.grade_level - b.grade_level || a.topic_name.localeCompare(b.topic_name));
-              }
-
-              if (filtered.length === 0) {
-                return (
-                  <div className="bg-white rounded-lg shadow-sm p-8 text-center">
-                    <p className="text-gray-500">No topics match the selected filter</p>
-                  </div>
-                );
-              }
-
-              return (
-                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
-                  {filtered.map((topic) => {
-                    const statusColor = topic.status === 'good' ? '#10b981' : topic.status === 'needs_attention' ? '#f59e0b' : '#ef4444';
-                    const statusLabel = topic.status === 'good' ? 'Good' : topic.status === 'needs_attention' ? 'Needs Attention' : 'Critical';
-                    const statusBg = topic.status === 'good' ? 'bg-green-100 text-green-800' : topic.status === 'needs_attention' ? 'bg-yellow-100 text-yellow-800' : 'bg-red-100 text-red-800';
-                    return (
-                      <button
-                        key={topic.topic_id}
-                        onClick={() => setSelectedHeatmapTopic(topic)}
-                        className="bg-white rounded-lg shadow-sm p-3 text-left hover:shadow-md transition border-t-2"
-                        style={{ borderTopColor: statusColor, backgroundColor: '#ffffff' }}
-                        title={`${topic.mastered_count} mastered, ${topic.struggling_count} struggling, ${topic.untouched_count} not started`}
-                      >
-                        <div className="flex justify-between items-start mb-2">
-                          <div>
-                            <h3 className="font-medium text-sm text-gray-800">{topic.topic_name}</h3>
-                            <p className="text-xs text-gray-500">Grade {topic.grade_level}</p>
-                          </div>
-                          <span className={`text-xs px-1.5 py-0.5 rounded font-medium ${statusBg}`}>
-                            {statusLabel}
-                          </span>
-                        </div>
-                        <div className="mb-2">
-                          <span className="text-xl font-bold" style={{ color: statusColor }}>
-                            {topic.mastery_percentage}%
-                          </span>
-                          <span className="text-xs text-gray-500 ml-1">mastery</span>
-                        </div>
-                        <div className="w-full bg-gray-200 rounded-full h-1.5 mb-2">
-                          <div
-                            className="h-1.5 rounded-full transition-all"
-                            style={{ width: `${topic.mastery_percentage}%`, backgroundColor: statusColor }}
-                          ></div>
-                        </div>
-                        <div className="flex justify-between text-xs text-gray-500">
-                          <span title="Mastered">{topic.mastered_count} mastered</span>
-                          <span title="Struggling">{topic.struggling_count} struggling</span>
-                          <span title="Not started">{topic.untouched_count} not started</span>
-                        </div>
-                      </button>
-                    );
-                  })}
-                </div>
-              );
-            })()}
-          </div>
-        )}
-
-        {/* Curriculum Search Tab */}
-        {activeTab === 'curriculum' && (
-          <div>
-            <h2 className="text-xl font-bold mb-3">Curriculum Search</h2>
-            <div className="flex gap-2 mb-4">
-              <input
-                type="text"
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                onKeyDown={(e) => e.key === 'Enter' && handleSearch()}
-                placeholder="Search curriculum..."
-                className="flex-1 px-3 py-1.5 text-sm border rounded-lg focus:outline-none focus:ring-2"
-                style={{ borderColor: '#d1d5db' }}
-              />
+            <div className="flex justify-between items-center mb-4">
+              <h2 className="text-xl font-bold">Material & Platform Analytics</h2>
               <button
-                onClick={handleSearch}
-                className="px-3 py-1.5 text-sm rounded-lg transition text-white"
+                onClick={loadAnalytics}
+                disabled={analyticsLoading}
+                className="px-3 py-1.5 text-sm rounded-md text-white hover:opacity-90"
                 style={{ backgroundColor: '#2563eb' }}
               >
-                Search
+                {analyticsLoading ? 'Refreshing…' : 'Refresh'}
               </button>
             </div>
 
-            {isLoading && (
-              <div className="text-center py-6">
-                <div className="text-gray-500">Searching...</div>
-              </div>
-            )}
-
-            {!isLoading && searchResults.length > 0 && (
-              <div className="space-y-3">
-                {searchResults.map((result, idx) => (
-                  <div key={idx} className="bg-white rounded-lg shadow-sm p-3" style={{ backgroundColor: '#ffffff' }}>
-                    <p className="text-gray-700 mb-2 text-sm">
-                      {result.text ? result.text.substring(0, 300) : 'No preview available'}
-                      {result.text && result.text.length > 300 ? '...' : ''}
-                    </p>
-                    <div className="flex gap-3 text-xs text-gray-500">
-                      {result.source_pdf && (
-                        <span>Source: {result.source_pdf}</span>
-                      )}
-                      {result.page_number && (
-                        <span>Page: {result.page_number}</span>
-                      )}
+            {/* Material Approval Overview */}
+            <div className="bg-white rounded-lg shadow-sm p-4 mb-4" style={{ backgroundColor: '#ffffff' }}>
+              <h3 className="text-sm font-semibold mb-3 text-gray-700">Material Quality & Approval Summary</h3>
+              {analyticsData ? (
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                  {[
+                    { label: 'Total Materials', val: analyticsData.approval_stats?.total_materials || 0, color: '#2563eb' },
+                    { label: 'Approved', val: analyticsData.approval_stats?.approved || 0, color: '#10b981' },
+                    { label: 'Pending', val: analyticsData.approval_stats?.pending || 0, color: '#f59e0b' },
+                    { label: 'Rejected', val: analyticsData.approval_stats?.rejected || 0, color: '#ef4444' },
+                  ].map(card => (
+                    <div key={card.label} className="rounded-lg p-3 border" style={{ borderColor: '#e5e7eb' }}>
+                      <div className="text-2xl font-bold" style={{ color: card.color }}>{card.val}</div>
+                      <div className="text-xs text-gray-500">{card.label}</div>
                     </div>
-                  </div>
-                ))}
-              </div>
-            )}
-
-            {!isLoading && searchResults.length === 0 && searchQuery && (
-              <div className="bg-white rounded-lg shadow-sm p-6 text-center">
-                <p className="text-gray-500">No results found</p>
-              </div>
-            )}
-          </div>
-        )}
-
-        {/* Students Tab */}
-        {activeTab === 'students' && (
-          <div>
-            <h2 className="text-xl font-bold mb-3">Student Management</h2>
-            
-            <div className="grid md:grid-cols-3 gap-3">
-              <div className="bg-white rounded-lg shadow-sm p-3" style={{ backgroundColor: '#ffffff' }}>
-                <h3 className="font-medium mb-2 text-sm">Students</h3>
-                <div className="space-y-1 max-h-80 overflow-y-auto">
-                  {students.map((student) => (
-                    <button
-                      key={student.user_id}
-                      onClick={() => handleStudentSelect(student)}
-                      className={`w-full text-left p-2 rounded transition text-sm ${
-                        selectedStudent?.user_id === student.user_id
-                          ? 'bg-blue-100 border-blue-500'
-                          : 'hover:bg-gray-100'
-                      }`}
-                    >
-                      <div className="font-medium">{student.full_name}</div>
-                      <div className="text-xs text-gray-500">Grade {student.grade_level} - {student.section}</div>
-                    </button>
                   ))}
                 </div>
-              </div>
+              ) : (
+                <p className="text-sm text-gray-500">Click Refresh to load analytics data.</p>
+              )}
+            </div>
 
-              <div className="md:col-span-2 bg-white rounded-lg shadow-sm p-3" style={{ backgroundColor: '#ffffff' }}>
-                {selectedStudent ? (
-                  <div>
-                    <h3 className="text-base font-semibold mb-3">{selectedStudent.full_name}</h3>
-                    <div className="grid grid-cols-2 gap-3 mb-4">
-                      <div>
-                        <div className="text-xs text-gray-500">Email</div>
-                        <div className="text-sm">{selectedStudent.email}</div>
-                      </div>
-                      <div>
-                        <div className="text-xs text-gray-500">Grade & Section</div>
-                        <div className="text-sm">Grade {selectedStudent.grade_level}, Section {selectedStudent.section}</div>
+            {/* Top Generated Topics */}
+            <div className="bg-white rounded-lg shadow-sm p-4 mb-4" style={{ backgroundColor: '#ffffff' }}>
+              <h3 className="text-sm font-semibold mb-3 text-gray-700">Most Generated Topics</h3>
+              {analyticsData?.top_topics?.length > 0 ? (
+                <div className="space-y-2">
+                  {analyticsData.top_topics.map((t, i) => (
+                    <div key={t.topic} className="flex items-center gap-3">
+                      <span className="text-xs font-bold w-5" style={{ color: '#9ca3af' }}>{i + 1}.</span>
+                      <span className="text-sm flex-1 text-gray-800">{t.topic}</span>
+                      <div className="flex items-center gap-1">
+                        <div className="w-28 bg-gray-200 rounded-full h-2">
+                          <div
+                            className="h-2 rounded-full"
+                            style={{ width: `${Math.min(100, t.count * 20)}%`, backgroundColor: '#2563eb' }}
+                          />
+                        </div>
+                        <span className="text-xs text-gray-500 w-12 text-right">{t.count}×</span>
                       </div>
                     </div>
+                  ))}
+                </div>
+              ) : (
+                <p className="text-sm text-gray-500">No generation history yet. Start generating material to see trends.</p>
+              )}
+            </div>
 
-                    <h4 className="font-medium mb-2 text-sm">Skill Gaps</h4>
-                    {studentGaps.length > 0 ? (
-                      <div className="space-y-2">
-                        {studentGaps.map((gap) => (
-                          <div key={gap.topic_id} className="border rounded-lg p-2">
-                            <div className="flex justify-between items-center mb-1">
-                              <span className="font-medium text-sm">{gap.topic_name}</span>
-                              <span className={`px-2 py-0.5 rounded text-xs ${getWeaknessColor(gap.weakness_level)}`}>
-                                {gap.weakness_level} Need
-                              </span>
-                            </div>
-                            <div className="text-xs text-gray-500">
-                              Average Score: {gap.avg_score}%
-                            </div>
-                          </div>
-                        ))}
+            {/* Struggling Topics */}
+            <div className="bg-white rounded-lg shadow-sm p-4 mb-4" style={{ backgroundColor: '#ffffff' }}>
+              <h3 className="text-sm font-semibold mb-3 text-gray-700">Topics Students Struggle With Most</h3>
+              {analyticsData?.struggling_topics?.length > 0 ? (
+                <div className="space-y-2">
+                  {analyticsData.struggling_topics.map((t) => (
+                    <div
+                      key={t.topic_id}
+                      className="flex items-center gap-3 p-2 rounded-lg border"
+                      style={{ borderColor: '#e5e7eb' }}
+                    >
+                      <div
+                        className="w-9 h-9 rounded-full flex items-center justify-center text-xs font-bold text-white flex-shrink-0"
+                        style={{ backgroundColor: t.avg_score < 40 ? '#ef4444' : '#f59e0b' }}
+                      >
+                        {t.avg_score.toFixed(0)}%
                       </div>
-                    ) : (
-                      <div className="text-gray-500 text-center py-6 text-sm">
-                        No skill gaps detected for this student
+                      <div className="flex-1">
+                        <div className="text-sm font-medium text-gray-800">{t.topic_name}</div>
+                        <div className="text-xs text-gray-500">Grade {t.grade_level} · {t.num_students} students affected</div>
                       </div>
-                    )}
-
-                    <div className="mt-4 border-t pt-3">
-                      <h4 className="font-medium mb-2 text-sm">Generate Practice Material</h4>
-                      <div className="flex flex-wrap gap-2 items-end">
-                        <div className="flex-1 min-w-32">
-                          <label className="block text-xs text-gray-500 mb-1">Topic</label>
-                          <select
-                            value={generateTopic}
-                            onChange={(e) => { setGenerateTopic(e.target.value); setGenerateStatus(''); }}
-                            className="w-full border rounded px-2 py-1.5 text-sm focus:outline-none focus:ring-2"
-                            style={{ borderColor: '#d1d5db' }}
-                          >
-                            <option value="">Select weak topic...</option>
-                            {studentGaps.length > 0
-                              ? studentGaps.map((g) => (
-                                  <option key={g.topic_id} value={g.topic_name}>{g.topic_name}</option>
-                                ))
-                              : ['Algebra', 'Limits', 'Integration'].map((t) => (
-                                  <option key={t} value={t}>{t}</option>
-                                ))
-                            }
-                          </select>
-                        </div>
-                        <div>
-                          <label className="block text-xs text-gray-500 mb-1">Difficulty</label>
-                          <select
-                            value={generateDifficulty}
-                            onChange={(e) => setGenerateDifficulty(e.target.value)}
-                            className="border rounded px-2 py-1.5 text-sm focus:outline-none focus:ring-2"
-                            style={{ borderColor: '#d1d5db' }}
-                          >
-                            <option value="easy">Easy</option>
-                            <option value="medium">Medium</option>
-                            <option value="hard">Hard</option>
-                          </select>
-                        </div>
-                        <button
-                          onClick={handleGenerateMaterial}
-                          disabled={!generateTopic || isGenerating}
-                          className="px-3 py-1.5 text-sm rounded transition text-white disabled:opacity-50 disabled:cursor-not-allowed"
-                          style={{ backgroundColor: '#2563eb' }}
-                        >
-                          {isGenerating ? 'Generating...' : 'Generate'}
-                        </button>
-                      </div>
-                      {generateStatus === 'success' && (
-                        <p className="mt-2 text-xs text-green-600">Material created and sent for approval.</p>
-                      )}
-                      {generateStatus === 'error' && (
-                        <p className="mt-2 text-xs text-red-600">Failed to generate material. Please try again.</p>
-                      )}
+                      <button
+                        onClick={() => { setShowTopicGeneratorModal(true); setTopicInput(t.topic_name); }}
+                        className="px-3 py-1 text-xs rounded-md text-white hover:opacity-90"
+                        style={{ backgroundColor: '#2563eb' }}
+                      >
+                        Generate Material
+                      </button>
                     </div>
+                  ))}
+                </div>
+              ) : (
+                <p className="text-sm text-gray-500">All topics are performing well! Great job, class.</p>
+              )}
+            </div>
+
+            {/* AI Quizzes summary */}
+            <div className="bg-white rounded-lg shadow-sm p-4 mb-4" style={{ backgroundColor: '#ffffff' }}>
+              <h3 className="text-sm font-semibold mb-2 text-gray-700">Platform Summary</h3>
+              <div className="grid grid-cols-3 gap-3">
+                <div className="text-center p-3 bg-blue-50 rounded-lg">
+                  <div className="text-lg font-bold" style={{ color: '#2563eb' }}>
+                    {analyticsData?.ai_quizzes_generated || 0}
                   </div>
-                ) : (
-                  <div className="text-gray-500 text-center py-8 text-sm">
-                    Select a student to view details
+                  <div className="text-xs text-gray-500">AI Quizzes Generated</div>
+                </div>
+                <div className="text-center p-3 bg-green-50 rounded-lg">
+                  <div className="text-lg font-bold" style={{ color: '#10b981' }}>
+                    {analyticsData?.approval_stats?.total_helpful || 0}
                   </div>
-                )}
+                  <div className="text-xs text-gray-500">Helpful Ratings</div>
+                </div>
+                <div className="text-center p-3 bg-red-50 rounded-lg">
+                  <div className="text-lg font-bold" style={{ color: '#ef4444' }}>
+                    {analyticsData?.approval_stats?.total_not_helpful || 0}
+                  </div>
+                  <div className="text-xs text-gray-500">Not Helpful Ratings</div>
+                </div>
               </div>
             </div>
-          </div>
-        )}
 
-        {/* Quizzes Tab */}
-        {activeTab === 'quizzes' && (
-          <div>
-            <div className="flex justify-between items-center mb-3">
-              <h2 className="text-xl font-bold">Quizzes</h2>
-              <div className="flex gap-2">
+            {/* Batch Generation */}
+            <div className="bg-white rounded-lg shadow-sm p-4" style={{ backgroundColor: '#ffffff' }}>
+              <h3 className="text-sm font-semibold mb-2 text-gray-700">Batch Material Generation</h3>
+              <p className="text-xs text-gray-500 mb-3">Generate practice material for ALL weak topics for ALL students in a grade at once.</p>
+              <div className="flex gap-3 items-end mb-3">
+                <div>
+                  <label className="block text-xs text-gray-500 mb-1">Grade Level</label>
+                  <select
+                    value={batchGrade}
+                    onChange={(e) => setBatchGrade(e.target.value)}
+                    className="border rounded px-3 py-1.5 text-sm focus:outline-none focus:ring-2"
+                    style={{ borderColor: '#d1d5db' }}
+                  >
+                    <option value="9">Grade 9</option>
+                    <option value="10">Grade 10</option>
+                    <option value="11">Grade 11</option>
+                    <option value="12">Grade 12</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-xs text-gray-500 mb-1">Difficulty</label>
+                  <select
+                    value={batchDiff}
+                    onChange={(e) => setBatchDiff(e.target.value)}
+                    className="border rounded px-3 py-1.5 text-sm focus:outline-none focus:ring-2"
+                    style={{ borderColor: '#d1d5db' }}
+                  >
+                    <option value="easy">Easy</option>
+                    <option value="medium">Medium</option>
+                    <option value="hard">Hard</option>
+                  </select>
+                </div>
                 <button
-                  onClick={() => setShowCreateQuiz(true)}
-                  className="px-3 py-1.5 text-sm rounded-md transition text-white"
-                  style={{ backgroundColor: '#2563eb' }}
-                >
-                  + Create New Quiz
-                </button>
-                <button
-                  onClick={handleOpenTopicGenerator}
-                  className="px-3 py-1.5 text-sm rounded-md transition text-white"
+                  onClick={handleBatchGenerate}
+                  disabled={batchLoading}
+                  className="px-4 py-1.5 text-sm rounded-md text-white disabled:opacity-50"
                   style={{ backgroundColor: '#7c3aed' }}
                 >
-                  Generate Material by Topic
+                  {batchLoading ? 'Generating…' : 'Generate for All Students'}
                 </button>
               </div>
-            </div>
-            
-            <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-3">
-              {quizzes.map((quiz) => (
-                <div key={quiz.quiz_id} className="bg-white rounded-lg shadow-sm p-3" style={{ backgroundColor: '#ffffff' }}>
-                  <h3 className="font-medium mb-1 text-sm">{quiz.title}</h3>
-                  <p className="text-gray-600 text-xs mb-1">Topic: {quiz.topic}</p>
-                  <p className="text-gray-600 text-xs mb-1">Grade: {quiz.grade_level}</p>
-                  <p className="text-gray-600 text-xs mb-2">Marks: {quiz.total_marks}</p>
-                  <div className="flex gap-1.5">
-                    <button
-                      onClick={() => handleViewQuizResults(quiz)}
-                      className="flex-1 px-2 py-1 text-xs rounded hover:bg-gray-200"
-                      style={{ backgroundColor: '#f3f4f6' }}
-                    >
-                      View Results
-                    </button>
-                    <button 
-                      onClick={() => handleEditQuiz(quiz)}
-                      className="flex-1 px-2 py-1 text-xs rounded text-white" 
-                      style={{ backgroundColor: '#2563eb' }}
-                    >
-                      Edit
-                    </button>
-                  </div>
+              {batchResult && (
+                <div
+                  className="rounded p-3 text-sm"
+                  style={{ backgroundColor: '#ecfdf5', border: '1px solid #a7f3d0', color: '#065f46' }}
+                >
+                  {batchResult.message}: {batchResult.generated} materials generated across {batchResult.total_students || 0} student{batchResult.total_students !== 1 ? 's' : ''}.
+                  {batchResult.failed > 0 && <span> ({batchResult.failed} failed)</span>}
                 </div>
-              ))}
-            </div>
+              )}
           </div>
-        )}
-
-        {/* Pending Approvals Tab */}
-        {activeTab === 'approvals' && (
-          <div>
-            <h2 className="text-xl font-bold mb-3">Pending Approvals</h2>
-            
-            {pendingMaterials.length > 0 ? (
-              <div className="space-y-3">
-                {pendingMaterials.map((material) => (
-                  <div key={material.material_id} className="bg-white rounded-lg shadow-sm p-3" style={{ backgroundColor: '#ffffff' }}>
-                    <div className="flex justify-between items-start mb-3">
-                      <div>
-                        <h3 className="font-medium text-sm">{material.title}</h3>
-                        <p className="text-xs text-gray-500">Topic: {material.topic_name}</p>
-                        <p className="text-xs text-gray-500">Generated: {new Date(material.generated_date).toLocaleDateString()}</p>
-                      </div>
-                      <div className="flex gap-1.5">
-                        <button
-                          onClick={() => handleApproveMaterial(material.material_id)}
-                          className="px-3 py-1 text-xs rounded-md transition text-white"
-                          style={{ backgroundColor: '#10b981' }}
-                        >
-                          Approve
-                        </button>
-                        <button
-                          onClick={() => setShowRejectConfirm(material.material_id)}
-                          className="px-3 py-1 text-xs rounded-md transition text-white"
-                          style={{ backgroundColor: '#ef4444' }}
-                        >
-                          Reject
-                        </button>
-                      </div>
-                    </div>
-                    <div className="bg-gray-50 rounded p-2 mb-2" style={{ backgroundColor: '#f9fafb' }}>
-                      <div
-                        className="text-gray-700 text-sm"
-                        dangerouslySetInnerHTML={{ __html: material.content }}
-                      />
-                    </div>
-                    {material.source_citation && (
-                      <p className="text-xs text-gray-500 italic">Source: {material.source_citation}</p>
-                    )}
-                  </div>
-                ))}
-              </div>
-            ) : (
-              <div className="bg-white rounded-lg shadow-sm p-6 text-center">
-                <div className="text-gray-500">No pending approvals</div>
-                <p className="text-gray-400 mt-1 text-sm">All materials have been reviewed</p>
-              </div>
-            )}
+              )}
           </div>
         )}
       </div>
+  );
+}
 
       {/* Create Quiz Modal */}
       {showCreateQuiz && (
@@ -1383,13 +1092,30 @@ function TeacherDashboard() {
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
           <div className="bg-white rounded-lg shadow-xl w-full max-w-2xl max-h-[80vh] overflow-y-auto p-4" style={{ backgroundColor: '#ffffff' }}>
             <div className="flex justify-between items-center mb-3">
-              <h2 className="text-lg font-bold">{selectedQuizResults.quiz.title} - Results</h2>
-              <button
-                onClick={() => setShowResultsModal(false)}
-                className="text-gray-500 hover:text-gray-700 text-lg"
-              >
-                ✕
-              </button>
+              <h2 className="text-xl font-bold">Quizzes</h2>
+              <div className="flex gap-2">
+                <button
+                  onClick={() => setShowCreateQuiz(true)}
+                  className="px-3 py-1.5 text-sm rounded-md transition text-white"
+                  style={{ backgroundColor: '#2563eb' }}
+                >
+                  + Create New Quiz
+                </button>
+                <button
+                  onClick={() => { setShowAIQuizModal(true); setAiQuizError(''); setAiQuizResult(null); }}
+                  className="px-3 py-1.5 text-sm rounded-md transition text-white"
+                  style={{ backgroundColor: '#7c3aed' }}
+                >
+                  ✦ Generate AI Quiz
+                </button>
+                <button
+                  onClick={handleOpenTopicGenerator}
+                  className="px-3 py-1.5 text-sm rounded-md transition text-white"
+                  style={{ backgroundColor: '#059669' }}
+                >
+                  Generate Material by Topic
+                </button>
+              </div>
             </div>
             
             {selectedQuizResults.results.length > 0 ? (
@@ -1584,6 +1310,146 @@ function TeacherDashboard() {
                 </div>
               </div>
             )}
+          </div>
+        </div>
+      )}
+
+      {/* ── AI Quiz Generation Modal ─────────────────────────────── */}
+      {showAIQuizModal && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-lg shadow-xl w-full max-w-lg" style={{ backgroundColor: '#ffffff' }}>
+            <div className="p-4 border-b flex justify-between items-center">
+              <h2 className="text-lg font-bold">Generate AI Quiz</h2>
+              <button
+                onClick={() => { setShowAIQuizModal(false); setAiQuizError(''); setAiQuizResult(null); }}
+                className="text-gray-500 hover:text-gray-700 text-lg leading-none"
+              >
+                &times;
+              </button>
+            </div>
+
+            <div className="p-4 space-y-3">
+              <p className="text-xs text-gray-500">
+                AI generates a quiz from the curriculum via RAG search. All 6 textbooks are searched.
+              </p>
+
+              {/* Topic with autocomplete */}
+              <div className="relative">
+                <label className="block text-sm font-medium text-gray-700 mb-1">Topic</label>
+                <input
+                  type="text"
+                  value={aiQuizTopic}
+                  onChange={(e) => handleTopicInputChange(e.target.value)}
+                  onFocus={() => aiQuizSuggestions.length > 0 && setTopicSuggestionVisible(true)}
+                  onBlur={() => setTimeout(() => setTopicSuggestionVisible(false), 200)}
+                  placeholder="e.g., Probability, Quadratic Equations, Derivatives"
+                  className="w-full px-3 py-2 text-sm border rounded focus:outline-none focus:ring-2"
+                  style={{ borderColor: '#d1d5db' }}
+                />
+                {topicSuggestionVisible && aiQuizSuggestions.length > 0 && (
+                  <div className="absolute z-10 left-0 right-0 bg-white border rounded-b shadow-lg max-h-48 overflow-y-auto"
+                       style={{ borderColor: '#d1d5db', top: '100%' }}>
+                    {aiQuizSuggestions.map((s, i) => (
+                      <button
+                        key={i}
+                        onMouseDown={() => selectSuggestion(s)}
+                        className="w-full text-left px-3 py-2 text-sm hover:bg-blue-50 border-b"
+                        style={{ borderColor: '#e5e7eb' }}
+                      >
+                        <span className="font-medium">{s.topic}</span>
+                        {s.grade_level && (
+                          <span className="ml-2 text-xs text-gray-500">Grade {s.grade_level}</span>
+                        )}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              <div className="grid grid-cols-3 gap-3">
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Grade</label>
+                  <select
+                    value={aiQuizGrade}
+                    onChange={(e) => setAiQuizGrade(e.target.value)}
+                    className="w-full px-3 py-2 text-sm border rounded focus:outline-none focus:ring-2"
+                    style={{ borderColor: '#d1d5db' }}
+                  >
+                    <option value="9">Grade 9</option>
+                    <option value="10">Grade 10</option>
+                    <option value="11">Grade 11</option>
+                    <option value="12">Grade 12</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Questions</label>
+                  <input
+                    type="number"
+                    min={3}
+                    max={15}
+                    value={aiQuizNumQ}
+                    onChange={(e) => setAiQuizNumQ(Math.min(15, Math.max(3, parseInt(e.target.value) || 5)))}
+                    className="w-full px-3 py-2 text-sm border rounded focus:outline-none focus:ring-2"
+                    style={{ borderColor: '#d1d5db' }}
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Difficulty</label>
+                  <select
+                    value={aiQuizDiff}
+                    onChange={(e) => setAiQuizDiff(e.target.value)}
+                    className="w-full px-3 py-2 text-sm border rounded focus:outline-none focus:ring-2"
+                    style={{ borderColor: '#d1d5db' }}
+                  >
+                    <option value="easy">Easy</option>
+                    <option value="medium">Medium</option>
+                    <option value="hard">Hard</option>
+                  </select>
+                </div>
+              </div>
+
+              {aiQuizError && (
+                <div className="bg-red-50 border border-red-200 text-red-700 px-3 py-2 rounded text-sm">
+                  {aiQuizError}
+                </div>
+              )}
+
+              {aiQuizResult && (
+                <div className="bg-green-50 border border-green-200 rounded p-3 text-sm">
+                  <div className="font-semibold text-green-800 whitespace-pre-wrap">{aiQuizResult.title}</div>
+                  <div className="text-xs text-green-700 mt-1">
+                    Topic: {aiQuizResult.topic} · Grade {aiQuizResult.grade_level} · {aiQuizResult.num_questions} questions · {aiQuizResult.difficulty}
+                  </div>
+                  <div className="text-xs text-green-600 mt-1">{aiQuizResult.message}</div>
+                  <div className="mt-2">
+                    <div className="text-xs font-semibold text-gray-700 mb-1">Preview Questions:</div>
+                    {aiQuizResult.questions?.map((q, i) => (
+                      <div key={i} className="text-xs text-gray-700 mb-1">
+                        Q{i + 1}. {q.question_text}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              <div className="flex justify-end gap-2 pt-2">
+                <button
+                  onClick={() => { setShowAIQuizModal(false); setAiQuizError(''); setAiQuizResult(null); }}
+                  className="px-3 py-1.5 text-sm rounded-md hover:bg-gray-200"
+                  style={{ backgroundColor: '#e5e7eb' }}
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={handleGenerateAIQuiz}
+                  disabled={aiQuizLoading || !aiQuizTopic.trim()}
+                  className="px-4 py-1.5 text-sm rounded-md text-white disabled:opacity-50"
+                  style={{ backgroundColor: '#7c3aed' }}
+                >
+                  {aiQuizLoading ? 'Generating…' : 'Generate AI Quiz'}
+                </button>
+              </div>
+            </div>
           </div>
         </div>
       )}
