@@ -1,5 +1,6 @@
 import os
 import smtplib
+import threading
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from datetime import datetime, timedelta
@@ -15,6 +16,112 @@ SMTP_PASSWORD = os.getenv('SMTP_PASSWORD', '')
 SMTP_FROM = os.getenv('SMTP_FROM', 'noreply@educare.com')
 
 EMAIL_MODE = os.getenv('EMAIL_MODE', 'smtp')
+
+# ---- In-memory rate limiter: max 3 emails per hour per email address ----
+_MAX_PER_HOUR = int(os.getenv('VERIFICATION_EMAILS_PER_HOUR', '3'))
+_WINDOW = timedelta(hours=1)
+
+_rate_lock = threading.Lock()
+_send_log: dict[str, list[datetime]] = {}   # email -> list of send timestamps
+
+
+class RateLimitError(Exception):
+    """Raised when the per-email rate limit is exceeded."""
+    pass
+
+
+def _prune(history: list[datetime], now: datetime) -> list[datetime]:
+    return [t for t in history if now - t <= _WINDOW]
+
+
+def check_rate_limit(email: str) -> bool:
+    """Return True if sending is allowed; False if rate limit exceeded."""
+    now = datetime.now()
+    with _rate_lock:
+        hist = _send_log.get(email, [])
+        hist = _prune(hist, now)
+        _send_log[email] = hist
+        return len(hist) < _MAX_PER_HOUR
+
+
+def record_send(email: str) -> None:
+    with _rate_lock:
+        hist = _send_log.get(email, [])
+        hist.append(datetime.now())
+        _send_log[email] = hist
+
+
+def get_rate_limit_remaining(email: str) -> int:
+    """Return how many more emails can be sent in the current window."""
+    now = datetime.now()
+    with _rate_lock:
+        hist = _send_log.get(email, [])
+        hist = _prune(hist, now)
+        _send_log[email] = hist
+        return max(0, _MAX_PER_HOUR - len(hist))
+
+
+def get_rate_limit_reset_in(email: str) -> int | None:
+    """Return seconds until the rate-limit window resets (first old entry expires)."""
+    now = datetime.now()
+    with _rate_lock:
+        hist = _send_log.get(email, [])
+        hist = _prune(hist, now)
+        _send_log[email] = hist
+        if len(hist) < _MAX_PER_HOUR:
+            return None
+        oldest = min(hist)
+        reset = (oldest + _WINDOW) - now
+        return max(0, int(reset.total_seconds()))
+
+
+def send_with_rate_limit(email: str, subject: str, html_body: str, text_body: str = "") -> bool:
+    """Apply rate-limit check, record the send, then dispatch the real email."""
+    if EMAIL_MODE == 'console':
+        # Dev mode: only honour the rate limit so tests stay realistic
+        if not check_rate_limit(email):
+            raise RateLimitError(
+                f"Rate limit exceeded for {email}- Max {_MAX_PER_HOUR} emails per hour."
+            )
+        record_send(email)
+        print(f"\n{'='*60}")
+        print(f"EMAIL ({EMAIL_MODE.upper()} MODE)")
+        print(f"To: {email}")
+        print(f"Subject: {subject}")
+        print(f"{'='*60}")
+        return True
+
+    if not SMTP_HOST or not SMTP_USER:
+        raise ValueError(
+            "SMTP credentials not configured. Set SMTP_HOST, SMTP_PORT, SMTP_USER, and SMTP_PASSWORD environment variables."
+        )
+
+    if not check_rate_limit(email):
+        raise RateLimitError(
+            f"Rate limit exceeded for {email}. Max {_MAX_PER_HOUR} emails per hour."
+        )
+    record_send(email)
+
+    try:
+        msg = MIMEMultipart('alternative')
+        msg['Subject'] = subject
+        msg['From'] = SMTP_FROM
+        msg['To'] = email
+        if text_body:
+            msg.attach(MIMEText(text_body, 'plain'))
+        msg.attach(MIMEText(html_body, 'html'))
+
+        server = smtplib.SMTP(SMTP_HOST, SMTP_PORT)
+        server.starttls()
+        server.login(SMTP_USER, SMTP_PASSWORD)
+        server.sendmail(SMTP_FROM, email, msg.as_string())
+        server.quit()
+        return True
+    except RateLimitError:
+        raise
+    except Exception as e:
+        print(f"Error sending email to {email}: {e}")
+        return False
 
 def generate_verification_token():
     return uuid.uuid4().hex + uuid.uuid4().hex
@@ -86,62 +193,16 @@ def send_verification_email(email, full_name, token):
     The EDUCARE Team
     """
     
-    if EMAIL_MODE == 'console':
-        print(f"\n{'='*60}")
-        print(f"VERIFICATION EMAIL (DEV MODE)")
-        print(f"{'='*60}")
-        print(f"To: {email}")
-        print(f"Name: {full_name}")
-        print(f"Verification URL: {verification_url}")
-        print(f"{'='*60}\n")
-        return True
-    
-    if not SMTP_HOST or not SMTP_USER:
-        raise ValueError(
-            "SMTP credentials not configured. Set SMTP_HOST, SMTP_PORT, SMTP_USER, and SMTP_PASSWORD environment variables."
-        )
-    
-    try:
-        msg = MIMEMultipart('alternative')
-        msg['Subject'] = 'Verify Your Email - EDUCARE'
-        msg['From'] = SMTP_FROM
-        msg['To'] = email
-        
-        part1 = MIMEText(text_content, 'plain')
-        part2 = MIMEText(html_content, 'html')
-        
-        msg.attach(part1)
-        msg.attach(part2)
-        
-        server = smtplib.SMTP(SMTP_HOST, SMTP_PORT)
-        server.starttls()
-        server.login(SMTP_USER, SMTP_PASSWORD)
-        server.sendmail(SMTP_FROM, email, msg.as_string())
-        server.quit()
-        
-        print(f"Verification email sent to {email}")
-        return True
-    except Exception as e:
-        print(f"Error sending email: {e}")
-        return False
+    ok = send_with_rate_limit(
+        email,
+        subject='Verify Your Email - EDUCARE',
+        html_body=html_content,
+        text_body=text_content
+    )
+    return ok
 
 def send_welcome_email(email, full_name, role):
     """Send welcome email after verification."""
-    if EMAIL_MODE == 'console':
-        print(f"\n{'='*60}")
-        print(f"WELCOME EMAIL (DEV MODE)")
-        print(f"{'='*60}")
-        print(f"To: {email}")
-        print(f"Name: {full_name}")
-        print(f"Role: {role}")
-        print(f"{'='*60}\n")
-        return True
-    
-    if not SMTP_HOST or not SMTP_USER:
-        raise ValueError(
-            "SMTP credentials not configured. Set SMTP_HOST, SMTP_PORT, SMTP_USER, and SMTP_PASSWORD environment variables."
-        )
-    
     html_content = f"""
     <!DOCTYPE html>
     <html>
@@ -159,19 +220,8 @@ def send_welcome_email(email, full_name, role):
     </html>
     """
     
-    try:
-        msg = MIMEMultipart('alternative')
-        msg['Subject'] = 'Welcome to EDUCARE!'
-        msg['From'] = SMTP_FROM
-        msg['To'] = email
-        msg.attach(MIMEText(html_content, 'html'))
-        
-        server = smtplib.SMTP(SMTP_HOST, SMTP_PORT)
-        server.starttls()
-        server.login(SMTP_USER, SMTP_PASSWORD)
-        server.sendmail(SMTP_FROM, email, msg.as_string())
-        server.quit()
-        return True
-    except Exception as e:
-        print(f"Error sending welcome email: {e}")
-        return False
+    return send_with_rate_limit(
+        email,
+        subject=f'Welcome to EDUCARE!',
+        html_body=html_content,
+    )

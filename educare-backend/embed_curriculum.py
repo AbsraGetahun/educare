@@ -19,6 +19,22 @@ METADATA_PATTERNS = [
 
 EXCLUDE_PAGES = list(range(1, 10))
 
+GRADE_FILENAME_MAP = {
+    'grade9': 9,
+    'grade10': 10,
+    'grade11': 11,
+    'grade12': 12,
+}
+
+
+def _parse_grade_from_filename(filename: str):
+    """Return grade_level int guessed from the PDF filename, else None."""
+    name = filename.lower()
+    for key, grade in GRADE_FILENAME_MAP.items():
+        if key in name:
+            return grade
+    return None
+
 
 def _is_metadata_page(text: str, page_num: int) -> bool:
     """Check if page should be skipped (front matter or metadata)."""
@@ -98,7 +114,8 @@ for pdf_file in pdf_files:
                     "source": pdf_file,
                     "page": page_num,
                     "chunk_index": len(chunks),
-                    "text": chunk[:2500]
+                    "text": chunk[:2500],
+                    "grade_level": _parse_grade_from_filename(pdf_file)
                 })
         page_count += 1
     
@@ -142,7 +159,8 @@ for i, chunk in enumerate(chunks):
         "text": chunk,
         "source": metadata[i]["source"],
         "page": metadata[i]["page"],
-        "chunk_index": metadata[i]["chunk_index"]
+        "chunk_index": metadata[i]["chunk_index"],
+        "grade_level": metadata[i]["grade_level"]
     })
 chunks_path = os.path.join(INDEX_FOLDER, "chunks.json")
 with open(chunks_path, 'w', encoding='utf-8') as f:
