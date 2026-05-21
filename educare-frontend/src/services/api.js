@@ -376,4 +376,61 @@ export const searchCurriculumByTopic = async (topicName, gradeLevel) => {
   return response.data;
 };
 
+// ── New: AI Quiz Generation (RAG-backed) ─────────────────────────
+export const generateAIQuiz = async (data) => {
+  const response = await api.post('/api/quiz/generate-ai', data);
+  return response.data;
+};
+
+// ── New: AI Student Assistant Chatbot ─────────────────────────────
+export const askAssistant = async (question, studentId) => {
+  const response = await api.post('/api/assistant/ask', {
+    question,
+    student_id: studentId,
+  });
+  return response.data;
+};
+
+export const getAssistantHistory = async (studentId) => {
+  const response = await api.get(`/api/assistant/history/${studentId}`);
+  return response.data;
+};
+
+// ── New: Batch Material Generation ────────────────────────────────
+export const generateBatchMaterials = async (data) => {
+  const response = await api.post('/api/materials/generate-batch', data);
+  return response.data;
+};
+
+// ── New: Material Analytics ───────────────────────────────────────
+export const getMaterialsAnalytics = async () => {
+  const response = await api.get('/api/materials/analytics');
+  return response.data;
+};
+
+// ── New: Curriculum topic suggestions (autocomplete) ──────────────
+export const getCurriculumTopics = async (prefixed) => {
+  const response = await api.get('/api/curriculum/topics', {
+    params: prefixed ? { prefix: prefixed } : {},
+  });
+  return response.data;
+};
+
+// ── New: Student rates material ───────────────────────────────────
+export const rateMaterial = async (materialId, rating, studentId) => {
+  const response = await api.post(`/api/materials/${materialId}/rate`, {
+    rating,
+    student_id: studentId,
+  });
+  return response.data;
+};
+
+// ── New: Extended admin stats ─────────────────────────────────────
+export const rateLimitRemaining = async (email) => {
+  const response = await api.get('/api/rate-limit/remaining', {
+    params: { email },
+  });
+  return response.data;
+};
+
 export default api;
