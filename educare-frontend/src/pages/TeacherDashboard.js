@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { getQuizzes, getStudents, getStudentGaps, getQuizResults, createQuiz, updateQuiz, deleteQuiz, getPendingMaterials, approveMaterial, rejectMaterial, getTeacherMasteryOverview, getHeatmap, searchCurriculum, generatePracticeMaterial } from '../services/api';
+import { getQuizzes, getStudents, getStudentGaps, getQuizResults, createQuiz, updateQuiz, deleteQuiz, getPendingMaterials, approveMaterial, rejectMaterial, getTeacherMasteryOverview, getHeatmap, searchCurriculum, generatePracticeMaterial, generateMaterialByTopic, searchCurriculumByTopic } from '../services/api';
 
 function TeacherDashboard() {
   const [activeTab, setActiveTab] = useState('overview');
@@ -35,6 +35,14 @@ function TeacherDashboard() {
   const [generateDifficulty, setGenerateDifficulty] = useState('medium');
   const [generateStatus, setGenerateStatus] = useState('');
   const [isGenerating, setIsGenerating] = useState(false);
+  const [showTopicGeneratorModal, setShowTopicGeneratorModal] = useState(false);
+  const [topicInput, setTopicInput] = useState('');
+  const [topicGradeLevel, setTopicGradeLevel] = useState('10');
+  const [topicDifficulty, setTopicDifficulty] = useState('medium');
+  const [topicGenPreview, setTopicGenPreview] = useState('');
+  const [topicGenStatus, setTopicGenStatus] = useState('');
+  const [topicGenLoading, setTopicGenLoading] = useState(false);
+  const [topicGenStep, setTopicGenStep] = useState(1); // 1=input, 2=preview, 3=done
   const [newQuiz, setNewQuiz] = useState({
     title: '',
     topic_id: '',
@@ -262,10 +270,93 @@ function TeacherDashboard() {
       setGenerateStatus('success');
       const materialsData = await getPendingMaterials();
       setPendingMaterials(materialsData.materials || []);
+      fetchData();
     } catch (err) {
       setGenerateStatus('error');
     } finally {
       setIsGenerating(false);
+    }
+  };
+
+  const handleOpenTopicGenerator = () => {
+    setShowTopicGeneratorModal(true);
+    setTopicGenStep(1);
+    setTopicInput('');
+    setTopicGradeLevel('10');
+    setTopicDifficulty('medium');
+    setTopicGenPreview('');
+    setTopicGenStatus('');
+  };
+
+  const handleCloseTopicGenerator = () => {
+    setShowTopicGeneratorModal(false);
+  };
+
+  const handleSearchCurriculumPreview = async () => {
+    if (!topicInput.trim()) return;
+    setTopicGenLoading(true);
+    setTopicGenStatus('');
+    setTopicGenPreview('');
+    setTopicGenStep(1);
+    try {
+      const data = await searchCurriculumByTopic(topicInput.trim(), topicGradeLevel);
+      const results = data.results || [];
+      if (results.length === 0) {
+        setTopicGenStatus('no_results');
+        setTopicGenPreview('No curriculum content found for this topic. Try a different keyword.');
+        setTopicGenStep(2);
+      } else {
+        const previewHtml = results
+          .map((r, i) =>
+            `<div class="mb-2 p-2 border rounded" style="border-color:#e5e7eb">
+              <span class="font-semibold text-sm">Result ${i + 1}</span>
+              <span class="text-xs text-gray-500 ml-2">(${r.source} p.${r.page || '?'})</span>
+              <p class="text-xs mt-1">${r.text}</p>
+            </div>`
+          )
+          .join('');
+        setTopicGenPreview(previewHtml);
+        setTopicGenStatus('found');
+        setTopicGenStep(2);
+      }
+    } catch (err) {
+      setTopicGenStatus('error');
+      setTopicGenPreview('Search failed. Please try again.');
+      setTopicGenStep(2);
+    } finally {
+      setTopicGenLoading(false);
+    }
+  };
+
+  const handleGenerateMaterialByTopic = async () => {
+    if (!topicInput.trim()) return;
+    setTopicGenLoading(true);
+    setTopicGenStatus('');
+    try {
+      const data = await generateMaterialByTopic(topicInput.trim(), topicGradeLevel, topicDifficulty);
+      setTopicGenStatus('generated');
+      setTopicGenPreview(
+        `<div class="p-3 rounded" style="background-color:#ecfdf5">
+          <p class="text-sm font-semibold text-green-700">Material generated successfully!</p>
+          <p class="text-xs mt-1 text-gray-700"><strong>Title:</strong> ${data.title}</p>
+          <p class="text-xs text-gray-700"><strong>Topic:</strong> ${data.topic_name}</p>
+          <p class="text-xs text-gray-700"><strong>Grade:</strong> ${data.grade_level}</p>
+          <p class="text-xs text-gray-700"><strong>Difficulty:</strong> ${data.difficulty}</p>
+          <p class="text-xs text-gray-700"><strong>Questions:</strong> ${data.questions_count}</p>
+          <p class="text-xs text-gray-500 mt-1">${data.message}</p>
+        </div>`
+      );
+      setTopicGenStep(3);
+      // Refresh pending materials list
+      const materialsData = await getPendingMaterials();
+      setPendingMaterials(materialsData.materials || []);
+      fetchData();
+    } catch (err) {
+      setTopicGenStatus('error');
+      setTopicGenPreview('Failed to generate material. Please try again.');
+      setTopicGenStep(2);
+    } finally {
+      setTopicGenLoading(false);
     }
   };
 
@@ -896,13 +987,22 @@ function TeacherDashboard() {
           <div>
             <div className="flex justify-between items-center mb-3">
               <h2 className="text-xl font-bold">Quizzes</h2>
-              <button
-                onClick={() => setShowCreateQuiz(true)}
-                className="px-3 py-1.5 text-sm rounded-md transition text-white"
-                style={{ backgroundColor: '#2563eb' }}
-              >
-                + Create New Quiz
-              </button>
+              <div className="flex gap-2">
+                <button
+                  onClick={() => setShowCreateQuiz(true)}
+                  className="px-3 py-1.5 text-sm rounded-md transition text-white"
+                  style={{ backgroundColor: '#2563eb' }}
+                >
+                  + Create New Quiz
+                </button>
+                <button
+                  onClick={handleOpenTopicGenerator}
+                  className="px-3 py-1.5 text-sm rounded-md transition text-white"
+                  style={{ backgroundColor: '#7c3aed' }}
+                >
+                  Generate Material by Topic
+                </button>
+              </div>
             </div>
             
             <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-3">
@@ -1356,6 +1456,134 @@ function TeacherDashboard() {
                 Reject
               </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* Generate Material by Topic Modal */}
+      {showTopicGeneratorModal && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-lg shadow-xl w-full max-w-2xl max-h-[85vh] overflow-y-auto p-4" style={{ backgroundColor: '#ffffff' }}>
+            <div className="flex justify-between items-center mb-4">
+              <h2 className="text-lg font-bold">Generate Material by Topic</h2>
+              <button onClick={handleCloseTopicGenerator} className="text-gray-500 hover:text-gray-700 text-lg leading-none">&times;</button>
+            </div>
+
+            {/* Step 1: Topic Input */}
+            {topicGenStep === 1 && (
+              <div>
+                <p className="text-xs text-gray-500 mb-3">Type any math topic to search the curriculum and generate practice material.</p>
+
+                <div className="space-y-3">
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">Topic</label>
+                    <input
+                      type="text"
+                      value={topicInput}
+                      onChange={(e) => setTopicInput(e.target.value)}
+                      placeholder="e.g., Solving linear equations"
+                      className="w-full px-3 py-2 text-sm border rounded focus:outline-none focus:ring-2"
+                      style={{ borderColor: '#d1d5db' }}
+                    />
+                  </div>
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-1">Grade Level</label>
+                      <select
+                        value={topicGradeLevel}
+                        onChange={(e) => setTopicGradeLevel(e.target.value)}
+                        className="w-full px-3 py-2 text-sm border rounded focus:outline-none focus:ring-2"
+                        style={{ borderColor: '#d1d5db' }}
+                      >
+                        <option value="9">Grade 9</option>
+                        <option value="10">Grade 10</option>
+                        <option value="11">Grade 11</option>
+                        <option value="12">Grade 12</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-1">Difficulty</label>
+                      <select
+                        value={topicDifficulty}
+                        onChange={(e) => setTopicDifficulty(e.target.value)}
+                        className="w-full px-3 py-2 text-sm border rounded focus:outline-none focus:ring-2"
+                        style={{ borderColor: '#d1d5db' }}
+                      >
+                        <option value="easy">Easy</option>
+                        <option value="medium">Medium</option>
+                        <option value="hard">Hard</option>
+                      </select>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="flex justify-end gap-2 mt-4">
+                  <button onClick={handleCloseTopicGenerator} className="px-3 py-1.5 text-sm rounded-md hover:bg-gray-200" style={{ backgroundColor: '#e5e7eb' }}>Cancel</button>
+                  <button
+                    onClick={handleSearchCurriculumPreview}
+                    disabled={!topicInput.trim() || topicGenLoading}
+                    className="px-4 py-1.5 text-sm rounded-md transition text-white disabled:opacity-50 disabled:cursor-not-allowed"
+                    style={{ backgroundColor: '#2563eb' }}
+                  >
+                    {topicGenLoading ? 'Searching...' : 'Search Curriculum'}
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* Step 2: Curriculum Preview */}
+            {topicGenStep === 2 && topicGenStatus !== 'generated' && (
+              <div>
+                <p className="text-sm text-gray-600 mb-2">
+                  Curriculum search results for <strong>{topicInput}</strong> (Grade {topicGradeLevel}):
+                </p>
+
+                {topicGenStatus === 'no_results' && (
+                  <div className="bg-yellow-50 border border-yellow-200 rounded p-3 mb-3">
+                    <p className="text-sm text-yellow-800">{topicGenPreview}</p>
+                  </div>
+                )}
+
+                {topicGenStatus === 'error' && (
+                  <div className="bg-red-50 border border-red-200 rounded p-3 mb-3">
+                    <p className="text-sm text-red-700">{topicGenPreview}</p>
+                  </div>
+                )}
+
+                {topicGenStatus === 'found' && (
+                  <div className="bg-gray-50 rounded-lg p-3 mb-3 max-h-60 overflow-y-auto" style={{ backgroundColor: '#f9fafb' }}>
+                    <div className="text-xs text-gray-600 mb-2 font-medium">Curriculum Content Preview:</div>
+                    <div dangerouslySetInnerHTML={{ __html: topicGenPreview }} />
+                  </div>
+                )}
+
+                <div className="flex justify-between mt-4">
+                  <button onClick={() => { setTopicGenStep(1); setTopicGenPreview(''); setTopicGenStatus(''); }} className="px-3 py-1.5 text-sm rounded-md hover:bg-gray-200" style={{ backgroundColor: '#e5e7eb' }}>Back</button>
+                  <div className="flex gap-2">
+                    <button onClick={handleCloseTopicGenerator} className="px-3 py-1.5 text-sm rounded-md hover:bg-gray-200" style={{ backgroundColor: '#e5e7eb' }}>Cancel</button>
+                    <button
+                      onClick={handleGenerateMaterialByTopic}
+                      disabled={topicGenLoading}
+                      className="px-4 py-1.5 text-sm rounded-md transition text-white disabled:opacity-50"
+                      style={{ backgroundColor: '#7c3aed' }}
+                    >
+                      {topicGenLoading ? 'Generating...' : 'Generate Material'}
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* Step 3: Success */}
+            {topicGenStep === 3 && topicGenStatus === 'generated' && (
+              <div>
+                <div dangerouslySetInnerHTML={{ __html: topicGenPreview }} className="mb-4" />
+                <div className="flex justify-end gap-2">
+                  <button onClick={handleCloseTopicGenerator} className="px-3 py-1.5 text-sm rounded-md hover:bg-gray-200" style={{ backgroundColor: '#e5e7eb' }}>Close</button>
+                  <button onClick={() => { setShowRejectConfirm(null); setActiveTab('approvals'); }} className="px-4 py-1.5 text-sm rounded-md text-white" style={{ backgroundColor: '#2563eb' }}>Go to Pending Approvals</button>
+                </div>
+              </div>
+            )}
           </div>
         </div>
       )}
