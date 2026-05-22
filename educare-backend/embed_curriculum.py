@@ -27,13 +27,27 @@ GRADE_FILENAME_MAP = {
 }
 
 
-def _parse_grade_from_filename(filename: str):
-    """Return grade_level int guessed from the PDF filename, else None."""
-    name = filename.lower()
+def _parse_grades_from_filename(filename: str):
+    """Return list of grade levels this PDF applies to."""
+    lower = filename.lower()
+    if '9&10' in lower or '9 and 10' in lower:
+        return [9, 10]
+    if '11&12' in lower or '11 and 12' in lower:
+        return [11, 12]
+    name = lower.replace(' ', '').replace('_', '')
     for key, grade in GRADE_FILENAME_MAP.items():
         if key in name:
-            return grade
-    return None
+            return [grade]
+    m = re.search(r'grade\s*(\d+)', lower)
+    if m:
+        return [int(m.group(1))]
+    return []
+
+
+def _parse_grade_from_filename(filename: str):
+    """Primary grade for metadata (first of list)."""
+    grades = _parse_grades_from_filename(filename)
+    return grades[0] if grades else None
 
 
 def _is_metadata_page(text: str, page_num: int) -> bool:
@@ -110,12 +124,14 @@ for pdf_file in pdf_files:
         for chunk in text_chunks:
             if len(chunk.strip()) > MIN_CHUNK_LENGTH:
                 chunks.append(chunk)
+                grades = _parse_grades_from_filename(pdf_file)
                 metadata.append({
                     "source": pdf_file,
                     "page": page_num,
                     "chunk_index": len(chunks),
                     "text": chunk[:2500],
-                    "grade_level": _parse_grade_from_filename(pdf_file)
+                    "grade_level": grades[0] if grades else None,
+                    "grade_levels": grades,
                 })
         page_count += 1
     
