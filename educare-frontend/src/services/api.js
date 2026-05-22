@@ -29,16 +29,6 @@ export const register = async (userData) => {
   return response.data;
 };
 
-export const verifyEmail = async (token) => {
-  const response = await api.get('/api/verify-email', { params: { token } });
-  return response.data;
-};
-
-export const resendVerification = async (email) => {
-  const response = await api.post('/api/resend-verification', { email });
-  return response.data;
-};
-
 export const adminLogin = async (email, password) => {
   const response = await api.post('/api/admin/login', { email, password });
   return response.data;
@@ -348,11 +338,12 @@ export const getHeatmap = async () => {
 };
 
 // RAG Material Generation API
-export const generatePracticeMaterial = async (topicName, studentId, difficulty = 'medium') => {
+export const generatePracticeMaterial = async (topicName, studentId, difficulty = 'medium', skipDedup = false) => {
   const response = await api.post('/api/materials/generate', {
     topic_name: topicName,
     student_id: studentId,
-    difficulty
+    difficulty,
+    skip_dedup: skipDedup
   });
   return response.data;
 };
@@ -396,6 +387,11 @@ export const getAssistantHistory = async (studentId) => {
   return response.data;
 };
 
+export const clearAssistantHistory = async (studentId) => {
+  const response = await api.request({ method: 'DELETE', url: '/api/assistant/history', data: { student_id: studentId } });
+  return response.data;
+};
+
 // ── New: Batch Material Generation ────────────────────────────────
 export const generateBatchMaterials = async (data) => {
   const response = await api.post('/api/materials/generate-batch', data);
@@ -421,14 +417,6 @@ export const rateMaterial = async (materialId, rating, studentId) => {
   const response = await api.post(`/api/materials/${materialId}/rate`, {
     rating,
     student_id: studentId,
-  });
-  return response.data;
-};
-
-// ── New: Extended admin stats ─────────────────────────────────────
-export const rateLimitRemaining = async (email) => {
-  const response = await api.get('/api/rate-limit/remaining', {
-    params: { email },
   });
   return response.data;
 };

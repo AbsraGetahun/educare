@@ -12,8 +12,6 @@ import TeacherDashboard from './pages/TeacherDashboard';
 import FamilyDashboard from './pages/FamilyDashboard';
 import AdminDashboard from './pages/AdminDashboard';
 import QuizTaking from './pages/QuizTaking';
-import VerifyEmail from './pages/VerifyEmail';
-
 function App() {
   const [token, setToken] = useState(localStorage.getItem('token'));
   const [role, setRole] = useState(localStorage.getItem('role'));
@@ -59,9 +57,6 @@ function App() {
         {/* Registration Routes */}
         <Route path="/student/register" element={<StudentRegister />} />
         <Route path="/family/register" element={<FamilyRegister />} />
-        
-        {/* Verification Route */}
-        <Route path="/verify-email" element={<VerifyEmail />} />
         
         {/* Protected Dashboard Routes */}
         <Route 
