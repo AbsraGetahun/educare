@@ -4,6 +4,16 @@
 
 EDUCARE is a comprehensive educational platform designed to support mathematics learning for students, teachers, families, and administrators. The platform provides role-based access to track student progress, identify learning gaps, and deliver personalized quiz-based assessments.
 
+## Advanced RAG setup
+
+1. Copy the six curriculum PDFs into `educare-backend/curriculum_data/` (see `curriculum_data/README.md`).
+2. Build the FAISS index: `python educare-backend/embed_curriculum.py`
+3. Apply database migrations:
+   - `educare-backend/setup_extended_schema.sql`
+   - `educare-backend/setup_material_columns.sql`
+
+New API capabilities: grade-filtered material generation, AI quiz generation, student assistant chat, batch weakness materials, analytics, and material ratings.
+
 ## Technology Stack
 
 ### Backend
