@@ -123,6 +123,35 @@ def init_family_table():
 init_teachers_table()
 init_family_table()
 
+# ── Assistant conversations table ─────────────────────────────────────
+def init_assistant_table():
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS assistant_conversations (
+                conversation_id INT AUTO_INCREMENT PRIMARY KEY,
+                student_id INT NOT NULL,
+                user_message TEXT NOT NULL,
+                ai_response TEXT NOT NULL,
+                source_citation VARCHAR(500),
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (student_id) REFERENCES students(student_id) ON DELETE CASCADE
+            )
+        """)
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_assistant_conversations_student_id
+            ON assistant_conversations(student_id)
+        """)
+        conn.commit()
+        cursor.close()
+        conn.close()
+        print("Assistant conversations table initialized successfully")
+    except Exception as e:
+        print(f"Error initializing assistant table: {e}")
+
+init_assistant_table()
+
 # ==================== BASIC ENDPOINTS ====================
 
 @app.route('/')
@@ -201,13 +230,15 @@ def get_student_attempts(student_id):
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
-        cursor.execute("""
+        from gap_utils import QUIZ_STUDENT_JOIN
+        cursor.execute(f"""
             SELECT qa.attempt_id, qa.quiz_id, qa.score, qa.completed_at,
                    q.title, t.topic_name
             FROM quiz_attempt qa
             JOIN quizzes q ON qa.quiz_id = q.quiz_id
             JOIN topics t ON q.topic_id = t.topic_id
-            WHERE qa.student_id = %s
+            {QUIZ_STUDENT_JOIN}
+            WHERE s_qa.user_id = %s
             ORDER BY qa.completed_at DESC
         """, (student_id,))
         attempts = cursor.fetchall()
@@ -231,39 +262,18 @@ def get_student_attempts(student_id):
 
 @app.route('/api/students/<int:student_id>/gaps', methods=['GET'])
 def get_student_gaps(student_id):
+    """Learning gaps from quiz attempts. student_id path param is users.user_id."""
     try:
+        from gap_utils import fetch_student_gaps
         conn = get_db_connection()
         cursor = conn.cursor()
-        cursor.execute("""
-            SELECT t.topic_id, t.topic_name, 
-                   AVG(r.score) as avg_score,
-                   CASE 
-                       WHEN AVG(r.score) < 40 THEN 'High'
-                       WHEN AVG(r.score) < 70 THEN 'Moderate'
-                       ELSE 'Low'
-                   END as weakness_level
-            FROM results r
-            JOIN topics t ON r.topic_id = t.topic_id
-            WHERE r.student_id = %s
-            GROUP BY t.topic_id, t.topic_name
-            HAVING AVG(r.score) < 70
-        """, (student_id,))
-        gaps = cursor.fetchall()
+        gaps_list = fetch_student_gaps(cursor, student_id)
         cursor.close()
         conn.close()
-        
-        gaps_list = []
-        for gap in gaps:
-            gaps_list.append({
-                'topic_id': gap[0],
-                'topic_name': gap[1],
-                'avg_score': round(gap[2], 2),
-                'weakness_level': gap[3]
-            })
-        
         return jsonify({"gaps": gaps_list})
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        print(f"Error in /api/students/{student_id}/gaps: {e}")
+        return jsonify({"gaps": []}), 200
 
 # ==================== AUTHENTICATION ====================
 
@@ -280,7 +290,7 @@ def login():
         conn = get_db_connection()
         cursor = conn.cursor()
         cursor.execute(
-            "SELECT user_id, full_name, email, role, password, is_verified FROM users WHERE email = %s",
+            "SELECT user_id, full_name, email, role, password FROM users WHERE email = %s",
             (email,)
         )
         user = cursor.fetchone()
@@ -289,14 +299,6 @@ def login():
         
         if not user:
             return jsonify({"error": "Invalid credentials"}), 401
-        
-        # Check if email is verified (except for admin and teacher)
-        if user[3] not in ['admin', 'teacher'] and not user[5]:
-            return jsonify({
-                "error": "Please verify your email before logging in",
-                "requires_verification": True,
-                "email": email
-            }), 401
         
         stored_password = user[4]
         
@@ -343,149 +345,9 @@ def login():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
-@app.route('/api/verify-email', methods=['GET'])
-def verify_email():
-    try:
-        token = request.args.get('token')
-        
-        if not token:
-            return jsonify({"error": "Verification token required"}), 400
-        
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        
-        cursor.execute(
-            "SELECT user_id, full_name, email, role, token_expiry FROM users WHERE verification_token = %s",
-            (token,)
-        )
-        user = cursor.fetchone()
-        
-        if not user:
-            cursor.close()
-            conn.close()
-            return jsonify({
-                "success": False,
-                "error": "Invalid verification token"
-            }), 200
-        
-        # Check if already verified
-        cursor.execute("SELECT is_verified FROM users WHERE verification_token = %s", (token,))
-        is_verified = cursor.fetchone()
-        if is_verified and is_verified[0]:
-            cursor.close()
-            conn.close()
-            return jsonify({
-                "success": True,
-                "message": "Email already verified. You can now login."
-            }), 200
-        
-        # Check if token expired
-        if user[4] and user[4] < datetime.now():
-            cursor.close()
-            conn.close()
-            return jsonify({
-                "success": False,
-                "error": "Verification token has expired. Please request a new verification email."
-            }), 200
-        
-        # Verify the user
-        cursor.execute(
-            "UPDATE users SET is_verified = TRUE, verification_token = NULL, token_expiry = NULL WHERE verification_token = %s",
-            (token,)
-        )
-        conn.commit()
-        
-        cursor.close()
-        conn.close()
-        
-        return jsonify({
-            "success": True,
-            "message": "Email verified successfully! You can now login."
-        }), 200
-        
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-
-from datetime import datetime
-
-@app.route('/api/resend-verification', methods=['POST'])
-def resend_verification():
-    try:
-        from email_service import generate_verification_token, get_token_expiry, send_verification_email
-        
-        data = request.get_json()
-        email = data.get('email')
-        
-        if not email:
-            return jsonify({"error": "Email is required"}), 400
-        
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        
-        cursor.execute(
-            "SELECT user_id, full_name, role, is_verified FROM users WHERE email = %s",
-            (email,)
-        )
-        user = cursor.fetchone()
-        
-        if not user:
-            cursor.close()
-            conn.close()
-            return jsonify({"message": "If that email exists, a verification link has been sent."}), 200
-        
-        # Check if already verified
-        if user[3]:
-            cursor.close()
-            conn.close()
-            return jsonify({"message": "This email is already verified. You can login."}), 200
-        
-        # Check rate limit (simple implementation - check if token was sent recently)
-        cursor.execute(
-            "SELECT token_expiry FROM users WHERE email = %s",
-            (email,)
-        )
-        result = cursor.fetchone()
-        
-        if result and result[0]:
-            try:
-                token_time = result[0]
-                if isinstance(token_time, str):
-                    token_time = datetime.strptime(token_time, '%Y-%m-%d %H:%M:%S')
-                if token_time > datetime.now():
-                    time_left = (token_time - datetime.now()).total_seconds() / 60
-                    if time_left > 1:
-                        cursor.close()
-                        conn.close()
-                        return jsonify({"message": "Please wait a minute before requesting another verification email."}), 200
-            except Exception:
-                pass
-        
-        # Generate new token
-        verification_token = generate_verification_token()
-        token_expiry = get_token_expiry()
-        
-        cursor.execute(
-            "UPDATE users SET verification_token = %s, token_expiry = %s WHERE email = %s",
-            (verification_token, token_expiry, email)
-        )
-        conn.commit()
-        
-        cursor.close()
-        conn.close()
-        
-        # Send verification email
-        send_verification_email(email, user[1], verification_token)
-        
-        return jsonify({"message": "Verification email sent. Please check your inbox."}), 200
-        
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-
 @app.route('/api/register', methods=['POST'])
 def register():
     try:
-        from email_service import generate_verification_token, get_token_expiry, send_verification_email
-        
         data = request.get_json()
         full_name = data.get('full_name')
         email = data.get('email')
@@ -514,25 +376,15 @@ def register():
         conn = get_db_connection()
         cursor = conn.cursor()
 
-        cursor.execute("SELECT user_id, is_verified FROM users WHERE email = %s", (email,))
-        existing = cursor.fetchone()
-        if existing:
-            if existing[1]:
-                cursor.close()
-                conn.close()
-                return jsonify({"error": "Email already registered"}), 400
-            else:
-                cursor.close()
-                conn.close()
-                return jsonify({"error": "Email already registered but not verified. Please check your email or request a new verification link."}), 400
-
-        # Generate verification token
-        verification_token = generate_verification_token()
-        token_expiry = get_token_expiry()
+        cursor.execute("SELECT user_id FROM users WHERE email = %s", (email,))
+        if cursor.fetchone():
+            cursor.close()
+            conn.close()
+            return jsonify({"error": "Email already registered"}), 400
 
         cursor.execute(
-            "INSERT INTO users (full_name, email, password, role, is_verified, verification_token, token_expiry) VALUES (%s, %s, %s, 'student', FALSE, %s, %s)",
-            (full_name, email, hashed_password, verification_token, token_expiry)
+            "INSERT INTO users (full_name, email, password, role, is_verified) VALUES (%s, %s, %s, 'student', TRUE)",
+            (full_name, email, hashed_password)
         )
         user_id = int(cursor.lastrowid)
 
@@ -544,13 +396,19 @@ def register():
         conn.commit()
         cursor.close()
         conn.close()
-        
-        # Send verification email
-        send_verification_email(email, full_name, verification_token)
+
+        access_token = create_access_token(identity={
+            'user_id': user_id,
+            'role': 'student'
+        })
         
         return jsonify({
-            "message": "Registration successful! Please check your email to verify your account.",
-            "requires_verification": True
+            "message": "Account created successfully! You can now login.",
+            "user_id": user_id,
+            "full_name": full_name,
+            "email": email,
+            "role": "student",
+            "token": access_token
         }), 201
         
     except Exception as e:
@@ -668,8 +526,9 @@ def submit_quiz(quiz_id):
         conn = get_db_connection()
         cursor = conn.cursor()
 
-        # Look up student_id from students table using user_id
-        cursor.execute("SELECT student_id FROM students WHERE user_id = %s", (student_id,))
+        # Path/body student_id is users.user_id; quiz_attempt stores students.student_id
+        user_id = student_id
+        cursor.execute("SELECT student_id FROM students WHERE user_id = %s", (user_id,))
         student_record = cursor.fetchone()
         if not student_record:
             cursor.close()
@@ -719,7 +578,7 @@ def submit_quiz(quiz_id):
         mastery_update = None
         if topic_row:
             topic_id = topic_row[0]
-            avg_score = get_student_mastery_for_topic(cursor, student_id, topic_id)
+            avg_score = get_student_mastery_for_topic(cursor, user_id, topic_id)
             mastered = avg_score is not None and avg_score >= 70
             cursor.execute("SELECT topic_name FROM topics WHERE topic_id = %s", (topic_id,))
             tname_row = cursor.fetchone()
@@ -938,8 +797,6 @@ def delete_quiz(quiz_id):
 @app.route('/api/family/register', methods=['POST'])
 def family_register():
     try:
-        from email_service import generate_verification_token, get_token_expiry, send_verification_email
-        
         data = request.get_json()
         full_name = data.get('full_name')
         email = data.get('email')
@@ -959,18 +816,11 @@ def family_register():
         conn = get_db_connection()
         cursor = conn.cursor()
         
-        # Check if email already exists
-        cursor.execute("SELECT user_id, is_verified FROM users WHERE email = %s", (email,))
-        existing = cursor.fetchone()
-        if existing:
-            if existing[1]:
-                cursor.close()
-                conn.close()
-                return jsonify({"error": "Email already registered"}), 400
-            else:
-                cursor.close()
-                conn.close()
-                return jsonify({"error": "Email already registered but not verified. Please check your email or request a new verification link."}), 400
+        cursor.execute("SELECT user_id FROM users WHERE email = %s", (email,))
+        if cursor.fetchone():
+            cursor.close()
+            conn.close()
+            return jsonify({"error": "Email already registered"}), 400
         
         # Look up student by email
         cursor.execute("SELECT user_id FROM users WHERE email = %s AND role = 'student'", (student_email,))
@@ -982,14 +832,9 @@ def family_register():
         
         student_id = student[0]
         
-        # Generate verification token
-        verification_token = generate_verification_token()
-        token_expiry = get_token_expiry()
-        
-        # Insert user with family role
         cursor.execute(
-            "INSERT INTO users (full_name, email, password, role, is_verified, verification_token, token_expiry) VALUES (%s, %s, %s, 'family', FALSE, %s, %s)",
-            (full_name, email, hashed_password, verification_token, token_expiry)
+            "INSERT INTO users (full_name, email, password, role, is_verified) VALUES (%s, %s, %s, 'family', TRUE)",
+            (full_name, email, hashed_password)
         )
         user_id = cursor.lastrowid()
         
@@ -1000,17 +845,39 @@ def family_register():
         )
         
         conn.commit()
+
+        cursor.execute("""
+            SELECT f.student_id, u.full_name, s.grade_level, s.section
+            FROM family f
+            JOIN students s ON f.student_id = s.user_id
+            JOIN users u ON s.user_id = u.user_id
+            WHERE f.user_id = %s
+        """, (user_id,))
+        linked = cursor.fetchall() or []
+        students_list = [{
+            'user_id': row[0],
+            'full_name': row[1],
+            'grade_level': row[2],
+            'section': row[3],
+        } for row in linked]
+
         cursor.close()
         conn.close()
-        
-        # Send verification email
-        send_verification_email(email, full_name, verification_token)
+
+        access_token = create_access_token(identity={
+            'user_id': user_id,
+            'role': 'family'
+        })
         
         return jsonify({
-            "message": "Family account created! Please check your email to verify your account.",
-            "requires_verification": True,
+            "message": "Account created successfully! You can now login.",
             "user_id": user_id,
-            "linked_students": 1
+            "full_name": full_name,
+            "email": email,
+            "role": "family",
+            "token": access_token,
+            "students": students_list,
+            "linked_students": len(students_list)
         }), 201
         
     except Exception as e:
@@ -1062,7 +929,7 @@ def family_login():
         conn = get_db_connection()
         cursor = conn.cursor()
         cursor.execute(
-            "SELECT user_id, full_name, email, role, password, is_verified FROM users WHERE email = %s",
+            "SELECT user_id, full_name, email, role, password FROM users WHERE email = %s",
             (email,)
         )
         user = cursor.fetchone()
@@ -1071,16 +938,6 @@ def family_login():
             cursor.close()
             conn.close()
             return jsonify({"error": "Invalid credentials"}), 401
-        
-        # Check if email is verified
-        if not user[5]:
-            cursor.close()
-            conn.close()
-            return jsonify({
-                "error": "Please verify your email before logging in",
-                "requires_verification": True,
-                "email": email
-            }), 401
         
         stored_password = user[4]
         
@@ -1195,24 +1052,17 @@ def get_family_student_progress(student_id):
         conn = get_db_connection()
         cursor = conn.cursor()
         
-        # Look up actual student_id from students table using user_id
-        cursor.execute("SELECT student_id FROM students WHERE user_id = %s", (student_id,))
-        student_record = cursor.fetchone()
-        if not student_record:
-            cursor.close()
-            conn.close()
-            return jsonify({"attempts": []})
-        actual_student_id = student_record[0]
-        
-        cursor.execute("""
+        from gap_utils import QUIZ_STUDENT_JOIN
+        cursor.execute(f"""
             SELECT qa.attempt_id, qa.quiz_id, qa.score, qa.completed_at,
                    q.title, t.topic_name, q.total_marks
             FROM quiz_attempt qa
             JOIN quizzes q ON qa.quiz_id = q.quiz_id
             JOIN topics t ON q.topic_id = t.topic_id
-            WHERE qa.student_id = %s
+            {QUIZ_STUDENT_JOIN}
+            WHERE s_qa.user_id = %s
             ORDER BY qa.completed_at ASC
-        """, (actual_student_id,))
+        """, (student_id,))
         attempts = cursor.fetchall()
         
         attempts_list = []
@@ -1240,46 +1090,14 @@ def get_family_student_gaps(student_id):
         conn = get_db_connection()
         cursor = conn.cursor()
         
-        # Look up actual student_id from students table using user_id
-        cursor.execute("SELECT student_id FROM students WHERE user_id = %s", (student_id,))
-        student_record = cursor.fetchone()
-        if not student_record:
-            cursor.close()
-            conn.close()
-            return jsonify({"gaps": []})
-        actual_student_id = student_record[0]
-        
-        cursor.execute("""
-            SELECT t.topic_id, t.topic_name, 
-                   AVG(r.score) as avg_score,
-                   CASE 
-                       WHEN AVG(r.score) < 40 THEN 'High'
-                       WHEN AVG(r.score) < 70 THEN 'Moderate'
-                       ELSE 'Low'
-                   END as weakness_level
-            FROM results r
-            JOIN topics t ON r.topic_id = t.topic_id
-            WHERE r.student_id = %s
-            GROUP BY t.topic_id, t.topic_name
-            HAVING AVG(r.score) < 70
-        """, (actual_student_id,))
-        gaps = cursor.fetchall()
-        
-        gaps_list = []
-        for gap in gaps:
-            gaps_list.append({
-                'topic_id': gap[0],
-                'topic_name': gap[1],
-                'avg_score': round(gap[2], 2),
-                'weakness_level': gap[3]
-            })
-        
+        from gap_utils import fetch_student_gaps
+        gaps_list = fetch_student_gaps(cursor, student_id)
         cursor.close()
         conn.close()
-        
         return jsonify({"gaps": gaps_list})
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        print(f"Error in family gaps: {e}")
+        return jsonify({"gaps": []}), 200
 
 @app.route('/api/family/student/<int:student_id>/recommendations', methods=['GET'])
 def get_family_student_recommendations(student_id):
@@ -1287,42 +1105,25 @@ def get_family_student_recommendations(student_id):
         conn = get_db_connection()
         cursor = conn.cursor()
         
-        # Look up actual student_id from students table using user_id
-        cursor.execute("SELECT student_id FROM students WHERE user_id = %s", (student_id,))
-        student_record = cursor.fetchone()
-        if not student_record:
-            cursor.close()
-            conn.close()
-            return jsonify({"recommendations": []})
-        actual_student_id = student_record[0]
-        
-        # Get topics where student has gaps
-        cursor.execute("""
-            SELECT t.topic_id, t.topic_name, AVG(r.score) as avg_score
-            FROM results r
-            JOIN topics t ON r.topic_id = t.topic_id
-            WHERE r.student_id = %s
-            GROUP BY t.topic_id, t.topic_name
-            HAVING AVG(r.score) < 70
-            ORDER BY avg_score ASC
-            LIMIT 5
-        """, (actual_student_id,))
-        gap_topics = cursor.fetchall()
+        from gap_utils import QUIZ_STUDENT_JOIN, fetch_student_gaps
+        gap_topics = fetch_student_gaps(cursor, student_id)[:5]
         
         recommendations = []
         for topic in gap_topics:
-            # Get quizzes for this topic that student hasn't taken yet
-            cursor.execute("""
+            topic_id = topic['topic_id']
+            avg_score = topic['avg_score']
+            cursor.execute(f"""
                 SELECT q.quiz_id, q.title, q.total_marks
                 FROM quizzes q
                 WHERE q.topic_id = %s
                 AND q.quiz_id NOT IN (
                     SELECT qa.quiz_id
                     FROM quiz_attempt qa
-                    WHERE qa.student_id = %s
+                    {QUIZ_STUDENT_JOIN}
+                    WHERE s_qa.user_id = %s
                 )
                 LIMIT 3
-            """, (topic[0], actual_student_id))
+            """, (topic_id, student_id))
             quizzes = cursor.fetchall()
             
             for quiz in quizzes:
@@ -1330,8 +1131,8 @@ def get_family_student_recommendations(student_id):
                     'quiz_id': quiz[0],
                     'title': quiz[1],
                     'total_marks': quiz[2],
-                    'topic_name': topic[1],
-                    'avg_score': round(topic[2], 2)
+                    'topic_name': topic['topic_name'],
+                    'avg_score': avg_score
                 })
         
         cursor.close()
@@ -1347,15 +1148,6 @@ def get_family_student_report(student_id):
         conn = get_db_connection()
         cursor = conn.cursor()
         
-        # Look up actual student_id from students table using user_id
-        cursor.execute("SELECT student_id FROM students WHERE user_id = %s", (student_id,))
-        student_record = cursor.fetchone()
-        if not student_record:
-            cursor.close()
-            conn.close()
-            return jsonify({"error": "Student not found"}), 404
-        actual_student_id = student_record[0]
-        
         # Get student info
         cursor.execute("""
             SELECT u.full_name, s.grade_level, s.section
@@ -1370,38 +1162,23 @@ def get_family_student_report(student_id):
             conn.close()
             return jsonify({"error": "Student not found"}), 404
         
-        # Get all quiz attempts
-        cursor.execute("""
+        from gap_utils import QUIZ_STUDENT_JOIN, fetch_student_gaps
+        cursor.execute(f"""
             SELECT qa.attempt_id, qa.quiz_id, qa.score, qa.completed_at,
                    q.title, t.topic_name, q.total_marks
             FROM quiz_attempt qa
             JOIN quizzes q ON qa.quiz_id = q.quiz_id
             JOIN topics t ON q.topic_id = t.topic_id
-            WHERE qa.student_id = %s
+            {QUIZ_STUDENT_JOIN}
+            WHERE s_qa.user_id = %s
             ORDER BY qa.completed_at ASC
-        """, (actual_student_id,))
+        """, (student_id,))
         attempts = cursor.fetchall()
-        
-        # Get gaps
-        cursor.execute("""
-            SELECT t.topic_id, t.topic_name, AVG(r.score) as avg_score,
-                   CASE 
-                       WHEN AVG(r.score) < 40 THEN 'High'
-                       WHEN AVG(r.score) < 70 THEN 'Moderate'
-                       ELSE 'Low'
-                   END as weakness_level
-            FROM results r
-            JOIN topics t ON r.topic_id = t.topic_id
-            WHERE r.student_id = %s
-            GROUP BY t.topic_id, t.topic_name
-            HAVING AVG(r.score) < 70
-        """, (actual_student_id,))
-        gaps = cursor.fetchall()
+        gaps_list = fetch_student_gaps(cursor, student_id)
         
         cursor.close()
         conn.close()
         
-        # Build report data
         attempts_list = []
         for attempt in attempts:
             attempts_list.append({
@@ -1413,15 +1190,6 @@ def get_family_student_report(student_id):
                 'topic': attempt[5],
                 'total_marks': attempt[6],
                 'percentage': round((attempt[2] / attempt[6]) * 100, 1) if attempt[6] else 0
-            })
-        
-        gaps_list = []
-        for gap in gaps:
-            gaps_list.append({
-                'topic_id': gap[0],
-                'topic_name': gap[1],
-                'avg_score': round(gap[2], 1),
-                'weakness_level': gap[3]
             })
         
         # Calculate overall stats
@@ -1549,19 +1317,22 @@ def get_approved_materials():
         cursor = conn.cursor()
         
         if student_id:
-            # Get approved materials for topics where student has gaps
-            cursor.execute("""
+            from gap_utils import QUIZ_STUDENT_JOIN
+            cursor.execute(f"""
                 SELECT m.material_id, m.title, m.content, m.source_citation,
                        m.generated_date, t.topic_name
                 FROM material m
                 JOIN topics t ON m.topic_id = t.topic_id
                 WHERE m.approval_status = 'Approved'
                 AND m.topic_id IN (
-                    SELECT r.topic_id
-                    FROM results r
-                    WHERE r.student_id = %s
-                    GROUP BY r.topic_id
-                    HAVING AVG(r.score) < 70
+                    SELECT t2.topic_id
+                    FROM quiz_attempt qa
+                    JOIN quizzes q ON qa.quiz_id = q.quiz_id
+                    JOIN topics t2 ON q.topic_id = t2.topic_id
+                    {QUIZ_STUDENT_JOIN}
+                    WHERE s_qa.user_id = %s
+                    GROUP BY t2.topic_id
+                    HAVING AVG(qa.score * 100.0 / NULLIF(q.total_marks, 0)) < 70
                 )
                 ORDER BY m.generated_date DESC
             """, (student_id,))
@@ -2127,17 +1898,18 @@ def parse_prerequisites(prereq_str):
     return [int(x.strip()) for x in prereq_str.split(',') if x.strip().isdigit()]
 
 def get_student_mastery_for_topic(cursor, student_id, topic_id):
-    """Calculate average score for a student on a specific topic.
-    Returns average score or None if no attempts."""
-    cursor.execute("""
-        SELECT AVG(qa.score * 100.0 / q.total_marks) as avg_pct
+    """Calculate average score % for a student on a topic. student_id is users.user_id."""
+    from gap_utils import QUIZ_STUDENT_JOIN
+    cursor.execute(f"""
+        SELECT AVG(qa.score * 100.0 / NULLIF(q.total_marks, 0)) as avg_pct
         FROM quiz_attempt qa
         JOIN quizzes q ON qa.quiz_id = q.quiz_id
-        WHERE qa.student_id = %s AND q.topic_id = %s
+        {QUIZ_STUDENT_JOIN}
+        WHERE s_qa.user_id = %s AND q.topic_id = %s
     """, (student_id, topic_id))
     row = cursor.fetchone()
     if row and row[0] is not None:
-        return round(row[0], 2)
+        return round(float(row[0]), 2)
     return None
 
 def get_topic_mastery_map(cursor, student_id):
@@ -2356,31 +2128,24 @@ def get_teacher_mastery_overview():
         result = cursor.fetchone()
         total_students = result[0] if result else 0
         
+        from gap_utils import (
+            count_students_mastered_topic,
+            fetch_struggling_students_for_topic,
+            QUIZ_STUDENT_JOIN,
+        )
+
         overview = []
         for topic in topics:
             topic_id = topic[0]
             
-            # Get mastered count - students with >= 70% score
-            mastered_count = 0
+            mastered_count = count_students_mastered_topic(cursor, topic_id)
             attempted_count = 0
             try:
-                cursor.execute("""
-                    SELECT COUNT(DISTINCT qa.student_id)
+                cursor.execute(f"""
+                    SELECT COUNT(DISTINCT s_qa.user_id)
                     FROM quiz_attempt qa
                     JOIN quizzes q ON qa.quiz_id = q.quiz_id
-                    WHERE q.topic_id = %s
-                    AND (qa.score * 100.0 / q.total_marks) >= 70
-                """, (topic_id,))
-                result = cursor.fetchone()
-                mastered_count = result[0] if result else 0
-            except Exception:
-                pass
-            
-            try:
-                cursor.execute("""
-                    SELECT COUNT(DISTINCT qa.student_id)
-                    FROM quiz_attempt qa
-                    JOIN quizzes q ON qa.quiz_id = q.quiz_id
+                    {QUIZ_STUDENT_JOIN}
                     WHERE q.topic_id = %s
                 """, (topic_id,))
                 result = cursor.fetchone()
@@ -2390,39 +2155,19 @@ def get_teacher_mastery_overview():
             
             mastery_pct = round((mastered_count / total_students) * 100, 1) if total_students > 0 else 0
             
-            # Get struggling students
-            struggling_students = []
-            try:
-                cursor.execute("""
-                    SELECT u.user_id, u.full_name, AVG(qa.score * 100.0 / q.total_marks) as avg_pct
-                    FROM quiz_attempt qa
-                    JOIN quizzes q ON qa.quiz_id = q.quiz_id
-                    JOIN users u ON qa.student_id = u.user_id
-                    WHERE q.topic_id = %s
-                    GROUP BY u.user_id, u.full_name
-                    HAVING avg_pct < 70
-                    ORDER BY avg_pct ASC
-                """, (topic_id,))
-                for s in cursor.fetchall() or []:
-                    struggling_students.append({
-                        'student_id': s[0],
-                        'full_name': s[1],
-                        'avg_score': round(s[2], 2)
-                    })
-            except Exception:
-                pass
+            struggling_students = fetch_struggling_students_for_topic(cursor, topic_id)
             
-            # Get not started students
             not_started_students = []
             try:
-                cursor.execute("""
+                cursor.execute(f"""
                     SELECT u.user_id, u.full_name
                     FROM users u
                     WHERE u.role = 'student'
                     AND u.user_id NOT IN (
-                        SELECT DISTINCT qa.student_id
+                        SELECT DISTINCT s_qa.user_id
                         FROM quiz_attempt qa
                         JOIN quizzes q ON qa.quiz_id = q.quiz_id
+                        {QUIZ_STUDENT_JOIN}
                         WHERE q.topic_id = %s
                     )
                 """, (topic_id,))
@@ -2469,63 +2214,21 @@ def get_teacher_heatmap():
         cursor.execute("SELECT topic_id, topic_name, grade_level FROM topics ORDER BY grade_level, topic_id")
         topics = cursor.fetchall() or []
 
+        from gap_utils import (
+            count_students_mastered_topic,
+            count_students_struggling_topic,
+            count_students_untouched_topic,
+            fetch_struggling_students_for_topic,
+        )
+
         heatmap = []
         for topic in topics:
             topic_id = topic[0]
 
-            # Count students who mastered this topic (avg score >= 70%)
-            mastered_count = 0
-            try:
-                cursor.execute("""
-                    SELECT COUNT(*) FROM (
-                        SELECT qa.student_id
-                        FROM quiz_attempt qa
-                        JOIN quizzes q ON qa.quiz_id = q.quiz_id
-                        WHERE q.topic_id = %s
-                        GROUP BY qa.student_id
-                        HAVING AVG(qa.score * 100.0 / q.total_marks) >= 70
-                    ) mastered
-                """, (topic_id,))
-                result = cursor.fetchone()
-                mastered_count = result[0] if result else 0
-            except Exception:
-                pass
-
-            # Count students who attempted but haven't mastered (avg < 70%)
-            struggling_count = 0
-            try:
-                cursor.execute("""
-                    SELECT COUNT(*) FROM (
-                        SELECT qa.student_id
-                        FROM quiz_attempt qa
-                        JOIN quizzes q ON qa.quiz_id = q.quiz_id
-                        WHERE q.topic_id = %s
-                        GROUP BY qa.student_id
-                        HAVING AVG(qa.score * 100.0 / q.total_marks) < 70
-                    ) struggling
-                """, (topic_id,))
-                result = cursor.fetchone()
-                struggling_count = result[0] if result else 0
-            except Exception:
-                pass
-
-            # Count students who haven't attempted at all
-            untouched_count = 0
-            try:
-                cursor.execute("""
-                    SELECT COUNT(*) FROM users u
-                    WHERE u.role = 'student'
-                    AND u.user_id NOT IN (
-                        SELECT DISTINCT qa.student_id
-                        FROM quiz_attempt qa
-                        JOIN quizzes q ON qa.quiz_id = q.quiz_id
-                        WHERE q.topic_id = %s
-                    )
-                """, (topic_id,))
-                result = cursor.fetchone()
-                untouched_count = result[0] if result else 0
-            except Exception:
-                pass
+            mastered_count = count_students_mastered_topic(cursor, topic_id)
+            struggling_count = count_students_struggling_topic(cursor, topic_id)
+            untouched_count = count_students_untouched_topic(cursor, topic_id)
+            struggling_students = fetch_struggling_students_for_topic(cursor, topic_id)
 
             mastery_pct = round((mastered_count / total_students) * 100) if total_students > 0 else 0
 
@@ -2536,28 +2239,6 @@ def get_teacher_heatmap():
             else:
                 status = 'critical'
 
-            # Get struggling students with their scores
-            struggling_students = []
-            try:
-                cursor.execute("""
-                    SELECT u.user_id, u.full_name, AVG(qa.score * 100.0 / q.total_marks) as avg_pct
-                    FROM quiz_attempt qa
-                    JOIN quizzes q ON qa.quiz_id = q.quiz_id
-                    JOIN users u ON qa.student_id = u.user_id
-                    WHERE q.topic_id = %s
-                    GROUP BY u.user_id, u.full_name
-                    HAVING avg_pct < 70
-                    ORDER BY avg_pct ASC
-                """, (topic_id,))
-                for s in cursor.fetchall() or []:
-                    struggling_students.append({
-                        'student_id': s[0],
-                        'full_name': s[1],
-                        'avg_score': round(s[2], 1)
-                    })
-            except Exception:
-                pass
-
             heatmap.append({
                 'topic_id': topic_id,
                 'topic_name': topic[1],
@@ -2567,6 +2248,7 @@ def get_teacher_heatmap():
                 'struggling_count': struggling_count,
                 'untouched_count': untouched_count,
                 'mastery_percentage': mastery_pct,
+                'mastery_pct': mastery_pct,
                 'status': status,
                 'struggling_students': struggling_students
             })
@@ -2586,24 +2268,14 @@ def get_student_recommendations(student_id):
         conn = get_db_connection()
         cursor = conn.cursor()
 
-        # Get topics where student has gaps (avg score < 70%), ordered by weakness
-        cursor.execute("""
-            SELECT t.topic_id, t.topic_name, AVG(qa.score * 100.0 / q.total_marks) as avg_pct
-            FROM quiz_attempt qa
-            JOIN quizzes q ON qa.quiz_id = q.quiz_id
-            JOIN topics t ON q.topic_id = t.topic_id
-            WHERE qa.student_id = %s
-            GROUP BY t.topic_id, t.topic_name
-            HAVING avg_pct < 70
-            ORDER BY avg_pct ASC
-        """, (student_id,))
-        gap_topics = cursor.fetchall()
+        from gap_utils import QUIZ_STUDENT_JOIN, fetch_student_gaps
+        gap_topics = fetch_student_gaps(cursor, student_id)
 
         recommendations = []
         for topic in gap_topics:
-            topic_id = topic[0]
-            topic_name = topic[1]
-            avg_score = round(topic[2], 1)
+            topic_id = topic['topic_id']
+            topic_name = topic['topic_name']
+            avg_score = topic['avg_score']
 
             if avg_score < 40:
                 reason = f"You need to improve {topic_name}"
@@ -2611,14 +2283,15 @@ def get_student_recommendations(student_id):
                 reason = f"Practice more {topic_name} to reach mastery"
 
             # Find quizzes for this topic the student hasn't taken
-            cursor.execute("""
+            cursor.execute(f"""
                 SELECT q.quiz_id, q.title, q.total_marks
                 FROM quizzes q
                 WHERE q.topic_id = %s
                 AND q.quiz_id NOT IN (
                     SELECT qa.quiz_id
                     FROM quiz_attempt qa
-                    WHERE qa.student_id = %s
+                    {QUIZ_STUDENT_JOIN}
+                    WHERE s_qa.user_id = %s
                 )
                 LIMIT 2
             """, (topic_id, student_id))
@@ -2635,16 +2308,16 @@ def get_student_recommendations(student_id):
             if len(recommendations) >= 5:
                 break
 
-        # If fewer than 5 gap-based recommendations, add quizzes for unstarted topics
         if len(recommendations) < 5:
-            cursor.execute("""
+            cursor.execute(f"""
                 SELECT t.topic_id, t.topic_name
                 FROM topics t
                 WHERE t.topic_id NOT IN (
                     SELECT DISTINCT q.topic_id
                     FROM quiz_attempt qa
                     JOIN quizzes q ON qa.quiz_id = q.quiz_id
-                    WHERE qa.student_id = %s
+                    {QUIZ_STUDENT_JOIN}
+                    WHERE s_qa.user_id = %s
                 )
                 ORDER BY t.grade_level, t.topic_id
             """, (student_id,))
@@ -2735,9 +2408,23 @@ def get_student_materials():
         approved_count = cursor.fetchone()[0]
         print(f"[DEBUG] Approved materials in DB: {approved_count}")
         
-        cursor.execute("""
-            SELECT m.material_id, m.title, m.content, m.source_citation,
-                   m.generated_date, t.topic_name, m.topic_id
+        select_cols = """
+            m.material_id, m.title, m.content, m.source_citation,
+            m.generated_date, t.topic_name, m.topic_id
+        """
+        try:
+            cursor.execute("SHOW COLUMNS FROM material LIKE 'source_file'")
+            if cursor.fetchone():
+                select_cols = """
+                    m.material_id, m.title, m.content, m.source_citation,
+                    m.generated_date, t.topic_name, m.topic_id,
+                    m.source_file, m.source_page, m.source_grade, m.section_title
+                """
+        except Exception:
+            pass
+
+        cursor.execute(f"""
+            SELECT {select_cols}
             FROM material m
             LEFT JOIN topics t ON m.topic_id = t.topic_id
             WHERE m.approval_status = 'Approved'
@@ -2749,15 +2436,21 @@ def get_student_materials():
         
         materials_list = []
         for material in materials:
-            materials_list.append({
+            item = {
                 'material_id': material[0],
                 'title': material[1],
                 'content': material[2],
                 'source_citation': material[3],
                 'generated_date': str(material[4]) if material[4] else '',
                 'topic_name': material[5] if material[5] else '',
-                'topic_id': material[6]
-            })
+                'topic_id': material[6],
+            }
+            if len(material) > 7:
+                item['source_file'] = material[7]
+                item['source_page'] = material[8]
+                item['source_grade'] = material[9]
+                item['section_title'] = material[10]
+            materials_list.append(item)
         
         cursor.close()
         conn.close()
@@ -2770,47 +2463,24 @@ def get_student_materials():
 def search_curriculum():
     """Search curriculum using FAISS index and return full text results."""
     try:
+        import rag_service as rag
         if request.method == 'POST':
             data = request.get_json() or {}
             query = data.get('query', '').strip()
+            grade_level = data.get('grade_level')
         else:
             query = request.args.get('q', '').strip()
+            grade_level = request.args.get('grade_level')
 
         if not query:
             return jsonify({"error": "Search query required"}), 400
 
-        index_path = os.path.join('faiss_index', 'index.faiss')
-        vectorizer_path = os.path.join('faiss_index', 'vectorizer.pkl')
-        metadata_path = os.path.join('faiss_index', 'metadata.json')
+        if grade_level is not None:
+            grade_level = int(grade_level)
 
-        try:
-            index = faiss.read_index(index_path)
-            with open(vectorizer_path, 'rb') as f:
-                vectorizer = pickle.load(f)
-        except Exception:
+        results = rag.search_curriculum(query, grade_level, k=5)
+        if not results and not rag.faiss_available():
             return jsonify({"error": "FAISS index or vectorizer could not be loaded"}), 500
-
-        if not os.path.exists(metadata_path):
-            return jsonify({"error": "Metadata file not found at faiss_index/metadata.json"}), 404
-
-        with open(metadata_path, 'r', encoding='utf-8') as f:
-            metadata = json.load(f)
-
-        query_vector = vectorizer.transform([query]).toarray().astype('float32')
-        distances, indices = index.search(query_vector, 5)
-
-        results = []
-        for i, dist in zip(indices[0], distances[0]):
-            if i < 0 or i >= len(metadata):
-                continue
-            chunk = metadata[i]
-            similarity = max(0, (1 - float(dist)) * 100)
-            results.append({
-                'text': chunk['text'][:500],
-                'source': chunk['source'],
-                'page': chunk['page'],
-                'similarity': int(similarity)
-            })
 
         return jsonify({"results": results})
     except Exception as e:
@@ -2844,147 +2514,51 @@ def faiss_test():
 @app.route('/api/materials/generate', methods=['POST'])
 def generate_practice_material():
     """
-    Part 3: Local RAG generation endpoint.
-    Accepts topic_name, student_id, difficulty.
-    Uses FAISS search + question_generator to create practice material,
-    saves it to the material table with approval_status='pending'.
+    Weakness-targeted RAG material generation for a specific student.
+    Respects grade-level curriculum filter and 7-day deduplication.
     """
     try:
-        from question_generator import generate_questions
-        from curriculum_extractor import extract_content
-
         data = request.get_json() or {}
         topic_name = data.get('topic_name', '').strip()
         student_id = data.get('student_id')
         difficulty = data.get('difficulty', 'medium')
+        teacher_id = data.get('teacher_id', 1)
+        skip_dedup = data.get('skip_dedup', False)
 
         if not topic_name:
             return jsonify({"error": "topic_name is required"}), 400
+        if not student_id:
+            return jsonify({"error": "student_id is required"}), 400
 
-        # ── Step 1: FAISS search for curriculum context ──────────────────────
-        index_path = os.path.join('faiss_index', 'index.faiss')
-        vectorizer_path = os.path.join('faiss_index', 'vectorizer.pkl')
-        metadata_path = os.path.join('faiss_index', 'metadata.json')
-
-        curriculum_chunks = []
-        source_citation = f"Grade 12 Mathematics Curriculum - {topic_name}"
-
-        try:
-            index = faiss.read_index(index_path)
-            with open(vectorizer_path, 'rb') as f:
-                vectorizer = pickle.load(f)
-            with open(metadata_path, 'r', encoding='utf-8') as f:
-                metadata = json.load(f)
-
-            query_vector = vectorizer.transform([topic_name]).toarray().astype('float32')
-            distances, indices = index.search(query_vector, 3)
-
-            for i in indices[0]:
-                if 0 <= i < len(metadata):
-                    chunk = metadata[i]
-                    curriculum_chunks.append({
-                        'text': chunk.get('text', ''),
-                        'source': chunk.get('source', 'curriculum'),
-                        'page': chunk.get('page', '')
-                    })
-        except Exception:
-            pass  # FAISS unavailable – continue with questions only
-
-        # ── Step 2: Extract curriculum content ──────────────────────────────
-        extracted = extract_content(curriculum_chunks)
-        if extracted['source_citation']:
-            source_citation = extracted['source_citation']
-
-        # ── Step 3: Generate questions ───────────────────────────────────────
-        questions = generate_questions(topic_name, count=4, difficulty=difficulty)
-
-        # ── Step 4: Build HTML content ───────────────────────────────────────
-        html_parts = []
-
-        # Curriculum explanation section
-        if extracted['explanation']:
-            html_parts.append(
-                f'<div class="rag-explanation">'
-                f'<h3>Curriculum Overview</h3>'
-                f'<p>{extracted["explanation"]}</p>'
-                f'</div>'
-            )
-
-        # Key formulas
-        if extracted['formulas']:
-            formulas_html = ''.join(f'<li><code>{f}</code></li>' for f in extracted['formulas'])
-            html_parts.append(
-                f'<div class="rag-formulas">'
-                f'<h3>Key Formulas</h3>'
-                f'<ul>{formulas_html}</ul>'
-                f'</div>'
-            )
-
-        # Curriculum examples
-        if extracted['examples']:
-            examples_html = ''.join(f'<li>{e}</li>' for e in extracted['examples'])
-            html_parts.append(
-                f'<div class="rag-examples">'
-                f'<h3>Curriculum Examples</h3>'
-                f'<ul>{examples_html}</ul>'
-                f'</div>'
-            )
-
-        # Practice questions
-        questions_html = []
-        for idx, q in enumerate(questions, 1):
-            opts_html = ''.join(
-                f'<li data-idx="{i}" class="rag-option">{chr(65+i)}. {opt}</li>'
-                for i, opt in enumerate(q['options'])
-            )
-            questions_html.append(
-                f'<div class="rag-question" data-correct="{q["correct_index"]}">'
-                f'<p><strong>Q{idx}.</strong> {q["question"]}</p>'
-                f'<ul class="rag-options">{opts_html}</ul>'
-                f'<div class="rag-answer" style="display:none">'
-                f'<strong>Answer: {q["correct_letter"]}</strong> — {q["explanation"]}'
-                f'</div>'
-                f'</div>'
-            )
-
-        html_parts.append(
-            f'<div class="rag-questions">'
-            f'<h3>Practice Questions</h3>'
-            + ''.join(questions_html) +
-            f'</div>'
-        )
-
-        content_html = '\n'.join(html_parts)
-
-        # ── Step 5: Look up topic_id ─────────────────────────────────────────
+        helpers = _material_helpers
         conn = get_db_connection()
         cursor = conn.cursor()
 
-        cursor.execute(
-            "SELECT topic_id FROM topics WHERE LOWER(topic_name) LIKE %s LIMIT 1",
-            (f'%{topic_name.lower()}%',)
-        )
-        topic_row = cursor.fetchone()
-        if not topic_row:
-            # Fallback: use first topic
-            cursor.execute("SELECT topic_id FROM topics LIMIT 1")
-            topic_row = cursor.fetchone()
+        grade_level = helpers['student_grade'](cursor, student_id) or 10
 
-        if not topic_row:
+        if not skip_dedup and helpers['dedup_recent'](cursor, student_id, topic_name):
+            cursor.close()
+            conn.close()
+            return jsonify({
+                "error": "Material for this topic was already generated within the last 7 days",
+                "duplicate": True,
+            }), 409
+
+        html, cite, questions, _ = helpers['generate_material_core'](
+            topic_name, grade_level, difficulty, num_questions=4
+        )
+        topic_id = helpers['resolve_topic_id'](cursor, topic_name)
+        if not topic_id:
             cursor.close()
             conn.close()
             return jsonify({"error": "No topics found in database"}), 500
 
-        topic_id = topic_row[0]
-
-        # ── Step 6: Save to material table ───────────────────────────────────
-        cursor.execute("""
-            INSERT INTO material (topic_id, title, content, source_citation,
-                                  approval_status, generated_date)
-            VALUES (%s, %s, %s, %s, 'Pending', NOW())
-        """, (topic_id, f"Practice: {topic_name}", content_html, source_citation))
-
-        material_id = cursor.lastrowid
+        material_id = helpers['insert_material'](
+            cursor, topic_id, f"Practice: {topic_name}", html, cite, teacher_id
+        )
+        helpers['record_generation'](
+            cursor, teacher_id, student_id, topic_name, grade_level, difficulty
+        )
         conn.commit()
         cursor.close()
         conn.close()
@@ -2992,10 +2566,14 @@ def generate_practice_material():
         return jsonify({
             "material_id": material_id,
             "title": f"Practice: {topic_name}",
-            "source_citation": source_citation,
+            "source_citation": cite['source_citation'],
+            "source_file": cite.get('source_file'),
+            "source_page": cite.get('source_page'),
+            "source_grade": cite.get('source_grade'),
+            "grade_level": grade_level,
             "questions_count": len(questions),
-            "preview": content_html[:500],
-            "message": "Material generated and sent for teacher approval"
+            "preview": html[:500],
+            "message": "Material generated and sent for teacher approval",
         }), 201
 
     except Exception as e:
@@ -3031,6 +2609,10 @@ def search_curriculum_faiss():
         })
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
+# Advanced RAG routes (quiz AI, assistant, batch, analytics, etc.)
+from material_routes import register_routes as _register_material_routes
+_material_helpers = _register_material_routes(app, get_db_connection)
 
 if __name__ == '__main__':
     app.run(debug=True)
