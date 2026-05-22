@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
-import { register, resendVerification, rateLimitRemaining } from '../services/api';
+import { register } from '../services/api';
 
 function StudentRegister() {
   const [fullName, setFullName] = useState('');
@@ -9,10 +9,7 @@ function StudentRegister() {
   const [gradeLevel, setGradeLevel] = useState('');
   const [section, setSection] = useState('');
   const [error, setError] = useState('');
-  const [success, setSuccess] = useState(false);
   const [loading, setLoading] = useState(false);
-  const [resending, setResending] = useState(false);
-  const [rateInfo, setRateInfo] = useState(null);
   const navigate = useNavigate();
 
   const handleSubmit = async (e) => {
@@ -28,15 +25,17 @@ function StudentRegister() {
         grade_level: gradeLevel,
         section
       });
-      if (data.requires_verification) {
-        setSuccess(true);
-        try {
-          const rl = await rateLimitRemaining(email);
-          setRateInfo(rl.remaining);
-        } catch {}
-      } else {
-        navigate('/student/login');
+
+      if (data.token) {
+        localStorage.setItem('token', data.token);
+        localStorage.setItem('user_id', data.user_id);
+        localStorage.setItem('full_name', data.full_name);
+        localStorage.setItem('role', data.role);
+        navigate('/student/dashboard');
+        return;
       }
+
+      navigate('/student/login', { state: { message: data.message || 'Account created successfully! You can now login.' } });
     } catch (err) {
       setError(err.response?.data?.error || 'Registration failed');
     } finally {
@@ -44,26 +43,9 @@ function StudentRegister() {
     }
   };
 
-  const handleResendVerification = async () => {
-    setResending(true);
-    try {
-      await resendVerification(email.trim());
-      try {
-        const rl = await rateLimitRemaining(email.trim());
-        setRateInfo(rl.remaining);
-      } catch {}
-      alert('Verification email sent! Please check your inbox.');
-    } catch (err) {
-      alert(err.response?.data?.error || 'Failed to resend verification email');
-    } finally {
-      setResending(false);
-    }
-  };
-
   return (
     <div className="min-h-screen bg-gradient-to-br from-gray-50 to-blue-50 flex items-center justify-center p-4">
       <div className="w-full max-w-md">
-        {/* Header */}
         <div className="text-center mb-8">
           <Link to="/" className="inline-flex items-center justify-center mb-6">
             <div className="w-12 h-12 bg-blue-600 rounded-xl flex items-center justify-center">
@@ -76,123 +58,86 @@ function StudentRegister() {
           <p className="text-gray-600">Create your account to start learning</p>
         </div>
 
-        {/* Registration Card */}
         <div className="bg-white rounded-2xl shadow-xl p-8">
-          {success ? (
-            <div className="text-center">
-              <div className="w-16 h-16 bg-green-100 rounded-full flex items-center justify-center mx-auto mb-4">
-                <svg className="w-8 h-8 text-green-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
-                </svg>
+          <form onSubmit={handleSubmit}>
+            {error && (
+              <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-lg mb-6">
+                {error}
               </div>
-              <h2 className="text-xl font-bold text-gray-900 mb-2">Check Your Email</h2>
-              <p className="text-gray-600 mb-4">
-                We've sent a verification link to <strong>{email}</strong>. 
-                Please check your inbox and click the link to verify your account.
-              </p>
-              <p className="text-sm text-gray-500 mb-6">
-                Didn't receive the email? 
-                <button 
-                  type="button"
-                  onClick={handleResendVerification}
-                  disabled={resending}
-                  className="text-blue-600 hover:text-blue-700 font-medium ml-1 disabled:opacity-50"
-                >
-                  {resending ? 'Sending...' : 'Resend email'}
-                </button>
-              </p>
-              {rateInfo !== null && (
-                <p className="text-xs text-gray-400 mb-4">
-                  {rateInfo > 0
-                    ? `${rateInfo} verification email(s) remaining this hour.`
-                    : 'Rate limit reached. Try again in one hour.'}
-                </p>
-              )}
-              <Link to="/student/login" className="text-blue-600 hover:text-blue-700 font-medium">
-                Go to Login
-              </Link>
+            )}
+            
+            <div className="mb-6">
+              <label className="block text-gray-700 text-sm font-semibold mb-2">Full Name</label>
+              <input
+                type="text"
+                value={fullName}
+                onChange={(e) => setFullName(e.target.value)}
+                className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition"
+                placeholder="John Doe"
+                required
+              />
             </div>
-          ) : (
-            <form onSubmit={handleSubmit}>
-              {error && (
-                <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-lg mb-6">
-                  {error}
-                </div>
-              )}
-              
-              <div className="mb-6">
-                <label className="block text-gray-700 text-sm font-semibold mb-2">Full Name</label>
-                <input
-                  type="text"
-                  value={fullName}
-                  onChange={(e) => setFullName(e.target.value)}
-                  className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition"
-                  placeholder="John Doe"
-                  required
-                />
-              </div>
-              
-              <div className="mb-6">
-                <label className="block text-gray-700 text-sm font-semibold mb-2">Email Address</label>
-                <input
-                  type="email"
-                  value={email}
-                  onChange={(e) => setEmail(e.target.value)}
-                  className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition"
-                  placeholder="student@educare.com"
-                  required
-                />
-              </div>
-              
-              <div className="mb-6">
-                <label className="block text-gray-700 text-sm font-semibold mb-2">Password</label>
-                <input
-                  type="password"
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
-                  className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition"
-                  placeholder="••••••••"
-                  required
-                />
-              </div>
-              
-              <div className="mb-6">
-                <label className="block text-gray-700 text-sm font-semibold mb-2">Grade Level</label>
-                <select
-                  value={gradeLevel}
-                  onChange={(e) => setGradeLevel(e.target.value)}
-                  className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition"
-                  required
-                >
-                  <option value="">Select Grade</option>
-                  <option value="9">Grade 9</option>
-                  <option value="10">Grade 10</option>
-                  <option value="11">Grade 11</option>
-                  <option value="12">Grade 12</option>
-                </select>
-              </div>
-              
-              <div className="mb-6">
-                <label className="block text-gray-700 text-sm font-semibold mb-2">Section</label>
-                <input
-                  type="text"
-                  value={section}
-                  onChange={(e) => setSection(e.target.value)}
-                  className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition"
-                  placeholder="A"
-                  required
-                />
-              </div>
-              
-              <button
-                type="submit"
-                disabled={loading}
-                className="w-full bg-blue-600 text-white py-3 rounded-lg font-semibold hover:bg-blue-700 transition disabled:opacity-50 disabled:cursor-not-allowed shadow-lg"
+            
+            <div className="mb-6">
+              <label className="block text-gray-700 text-sm font-semibold mb-2">Email Address</label>
+              <input
+                type="email"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition"
+                placeholder="student@educare.com"
+                required
+              />
+            </div>
+            
+            <div className="mb-6">
+              <label className="block text-gray-700 text-sm font-semibold mb-2">Password</label>
+              <input
+                type="password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition"
+                placeholder="••••••••"
+                required
+              />
+            </div>
+            
+            <div className="mb-6">
+              <label className="block text-gray-700 text-sm font-semibold mb-2">Grade Level</label>
+              <select
+                value={gradeLevel}
+                onChange={(e) => setGradeLevel(e.target.value)}
+                className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition"
+                required
               >
-                {loading ? 'Creating account...' : 'Create Account'}
-              </button>
-            </form>
-          )}
+                <option value="">Select Grade</option>
+                <option value="9">Grade 9</option>
+                <option value="10">Grade 10</option>
+                <option value="11">Grade 11</option>
+                <option value="12">Grade 12</option>
+              </select>
+            </div>
+            
+            <div className="mb-6">
+              <label className="block text-gray-700 text-sm font-semibold mb-2">Section</label>
+              <input
+                type="text"
+                value={section}
+                onChange={(e) => setSection(e.target.value)}
+                className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition"
+                placeholder="A"
+                required
+              />
+            </div>
+            
+            <button
+              type="submit"
+              disabled={loading}
+              className="w-full bg-blue-600 text-white py-3 rounded-lg font-semibold hover:bg-blue-700 transition disabled:opacity-50 disabled:cursor-not-allowed shadow-lg"
+            >
+              {loading ? 'Creating account...' : 'Create Account'}
+            </button>
+          </form>
           
           <div className="mt-6 text-center">
             <p className="text-gray-600">

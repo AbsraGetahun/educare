@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { getQuizzes, getStudents, getStudentGaps, getQuizResults, createQuiz, updateQuiz, deleteQuiz, getPendingMaterials, approveMaterial, rejectMaterial, getTeacherMasteryOverview, getHeatmap, searchCurriculum, generatePracticeMaterial, generateMaterialByTopic, searchCurriculumByTopic, generateAIQuiz, getMaterialsAnalytics, getCurriculumTopics, generateBatchMaterials } from '../services/api';
+import { OverviewTab, MasteryTab, CurriculumTab, HeatmapTab, StudentsTab, QuizzesTab, ApprovalsTab } from '../components/TeacherTabPanels';
 
 function TeacherDashboard() {
   const [activeTab, setActiveTab] = useState('overview');
@@ -28,6 +29,9 @@ function TeacherDashboard() {
   const [curriculumResults, setCurriculumResults] = useState([]);
   const [curriculumLoading, setCurriculumLoading] = useState(false);
   const [curriculumSearched, setCurriculumSearched] = useState(false);
+  const [curriculumGeneratingIds, setCurriculumGeneratingIds] = useState({});
+  const [batchGenProgress, setBatchGenProgress] = useState(null);
+  const [batchGenSummary, setBatchGenSummary] = useState(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [searchResults, setSearchResults] = useState([]);
   const [isLoading, setIsLoading] = useState(false);
@@ -88,18 +92,29 @@ function TeacherDashboard() {
   const fullName = localStorage.getItem('full_name');
 
   // ── Topic autocomplete ────────────────────────────────────────
-  const handleTopicInputChange = async (val) => {
-    setAiQuizTopic(val);
-    setAiQuizError('');
+  const handleTopicInputChange = async (val, forMaterial = false) => {
+    if (forMaterial) {
+      setTopicInput(val);
+    } else {
+      setAiQuizTopic(val);
+      setAiQuizError('');
+    }
     if (val.trim().length >= 2) {
       try {
         const d = await getCurriculumTopics(val.trim());
-        setAiQuizSuggestions(d.topics || []);
+        const list = d.topics || [];
+        if (forMaterial) {
+          setAiQuizSuggestions(list);
+          setTopicSuggestionVisible(true);
+        } else {
+          setAiQuizSuggestions(list);
+        }
       } catch {
         setAiQuizSuggestions([]);
       }
     } else {
       setAiQuizSuggestions([]);
+      if (forMaterial) setTopicSuggestionVisible(false);
     }
   };
 
@@ -202,7 +217,8 @@ function TeacherDashboard() {
       const gapsData = await getStudentGaps(studentId);
       setStudentGaps(gapsData.gaps || []);
     } catch (err) {
-      console.error('Failed to load gaps');
+      console.error('Failed to load gaps', err);
+      setStudentGaps([]);
     }
   };
 
@@ -350,6 +366,124 @@ function TeacherDashboard() {
     }
   };
 
+  const handleGenerateFromSearchResult = async (result, index, difficulty = 'medium') => {
+    setCurriculumGeneratingIds(prev => ({ ...prev, [index]: true }));
+    try {
+      let topicName = '';
+      if (result.section) {
+        topicName = result.section.replace(/^Unit\s+\d+\s*:\s*/i, '').trim();
+      }
+      if (!topicName && result.text) {
+        const m = result.text.match(/Unit\s+\d+\s*:\s*([^\n]+)/i);
+        if (m) {
+          topicName = m[1].trim();
+        }
+      }
+      if (!topicName) {
+        topicName = curriculumQuery.trim();
+      }
+      if (topicName.length > 50) {
+        topicName = topicName.substring(0, 50);
+      }
+
+      const grade = result.grade_level || result.source_grade || 10;
+      const data = await generateMaterialByTopic(topicName, grade, difficulty);
+      
+      alert(`Material successfully generated from this result!\n\nTitle: ${data.title}\nGrade: ${data.grade_level}\nDifficulty: ${data.difficulty}\n\nIt is now pending approval in the "Pending Approvals" tab.`);
+      
+      // Refresh pending approvals
+      const materialsData = await getPendingMaterials();
+      setPendingMaterials(materialsData.materials || []);
+      fetchData();
+    } catch (err) {
+      console.error(err);
+      alert('Failed to generate material from this search result. Please try again.');
+    } finally {
+      setCurriculumGeneratingIds(prev => ({ ...prev, [index]: false }));
+    }
+  };
+
+  const handleGenerateBatchForStruggling = async (difficulty = 'medium') => {
+    // Collect struggling student-topic pairs
+    const seen = new Set();
+    const weakItems = [];
+    masteryOverview.forEach(topic => {
+      if (topic.struggling_students && topic.struggling_students.length > 0) {
+        topic.struggling_students.forEach(student => {
+          const key = `${student.student_id}_${topic.topic_id}`;
+          if (!seen.has(key)) {
+            seen.add(key);
+            weakItems.push({
+              studentId: student.student_id,
+              studentName: student.full_name,
+              topicName: topic.topic_name,
+              topicId: topic.topic_id,
+              gradeLevel: topic.grade_level,
+              avgScore: student.avg_score
+            });
+          }
+        });
+      }
+    });
+
+    if (weakItems.length === 0) {
+      alert("No struggling students with weak topics (average score < 70%) were found in the current tracker!");
+      return;
+    }
+
+    setBatchGenSummary(null);
+    setBatchGenProgress({
+      current: 0,
+      total: weakItems.length,
+      currentStudent: '',
+      currentTopic: ''
+    });
+
+    const generated = [];
+    const failed = [];
+
+    for (let i = 0; i < weakItems.length; i++) {
+      const item = weakItems[i];
+      setBatchGenProgress({
+        current: i + 1,
+        total: weakItems.length,
+        currentStudent: item.studentName,
+        currentTopic: item.topicName
+      });
+
+      try {
+        // Pass skipDedup = true so we bypass 7-day limits for batch gaps, ensuring we generate sheets cleanly.
+        const res = await generatePracticeMaterial(item.topicName, item.studentId, difficulty, true);
+        generated.push({
+          studentName: item.studentName,
+          topicName: item.topicName,
+          title: res.title || `Practice: ${item.topicName}`,
+          status: 'success'
+        });
+      } catch (err) {
+        console.error(`Failed to generate for ${item.studentName} on ${item.topicName}:`, err);
+        const isDuplicate = err.response && err.response.status === 409;
+        failed.push({
+          studentName: item.studentName,
+          topicName: item.topicName,
+          error: isDuplicate ? "Already generated within last 7 days" : (err.response?.data?.error || "Generation error"),
+          status: isDuplicate ? 'duplicate' : 'failed'
+        });
+      }
+    }
+
+    setBatchGenProgress(null);
+    setBatchGenSummary({
+      generated,
+      failed
+    });
+
+    // Refresh pending approvals list
+    const materialsData = await getPendingMaterials();
+    setPendingMaterials(materialsData.materials || []);
+    fetchData();
+  };
+
   const handleSearch = async () => {
     if (!searchQuery.trim()) return;
     setIsLoading(true);
@@ -377,6 +511,36 @@ function TeacherDashboard() {
       setGenerateStatus('error');
     } finally {
       setIsGenerating(false);
+    }
+  };
+
+  const handleGenerateForWeakness = async (gap) => {
+    if (!selectedStudent) return;
+    setGenerateTopic(gap.topic_name);
+    setIsGenerating(true);
+    setGenerateStatus('');
+    try {
+      await generatePracticeMaterial(gap.topic_name, selectedStudent.user_id, generateDifficulty);
+      setGenerateStatus('success');
+      const materialsData = await getPendingMaterials();
+      setPendingMaterials(materialsData.materials || []);
+      alert(`Material generated for "${gap.topic_name}" — pending approval.`);
+    } catch (err) {
+      const msg = err.response?.data?.error || 'Generation failed';
+      setGenerateStatus('error');
+      alert(msg);
+    } finally {
+      setIsGenerating(false);
+    }
+  };
+
+  const handleDeleteQuiz = async (quizId) => {
+    if (!window.confirm('Delete this quiz?')) return;
+    try {
+      await deleteQuiz(quizId);
+      fetchData();
+    } catch {
+      alert('Failed to delete quiz');
     }
   };
 
@@ -615,6 +779,93 @@ function TeacherDashboard() {
           </div>
         )}
 
+        {activeTab === 'overview' && (
+          <OverviewTab
+            totalStudents={totalStudents}
+            quizzes={quizzes}
+            pendingMaterials={pendingMaterials}
+            masteryOverview={masteryOverview}
+            getMasteryBarColor={getMasteryBarColor}
+            onGenerateBatch={handleGenerateBatchForStruggling}
+            batchProgress={batchGenProgress}
+            batchSummary={batchGenSummary}
+            setBatchSummary={setBatchGenSummary}
+          />
+        )}
+
+        {activeTab === 'mastery' && (
+          <MasteryTab
+            masteryOverview={masteryOverview}
+            expandedTopic={expandedTopic}
+            setExpandedTopic={setExpandedTopic}
+            getMasteryBarColor={getMasteryBarColor}
+          />
+        )}
+
+        {activeTab === 'curriculum' && (
+          <CurriculumTab
+            curriculumQuery={curriculumQuery}
+            setCurriculumQuery={setCurriculumQuery}
+            curriculumLoading={curriculumLoading}
+            curriculumSearched={curriculumSearched}
+            handleCurriculumSearch={handleCurriculumSearch}
+            curriculumResults={curriculumResults}
+            onGenerateFromSearch={handleGenerateFromSearchResult}
+            generatingIds={curriculumGeneratingIds}
+          />
+        )}
+
+        {activeTab === 'heatmap' && (
+          <HeatmapTab
+            heatmapData={heatmapData}
+            heatmapGradeFilter={heatmapGradeFilter}
+            setHeatmapGradeFilter={setHeatmapGradeFilter}
+            heatmapSort={heatmapSort}
+            setHeatmapSort={setHeatmapSort}
+            setSelectedHeatmapTopic={setSelectedHeatmapTopic}
+          />
+        )}
+
+        {activeTab === 'students' && (
+          <StudentsTab
+            students={students}
+            selectedStudent={selectedStudent}
+            handleStudentSelect={handleStudentSelect}
+            studentGaps={studentGaps}
+            generateTopic={generateTopic}
+            setGenerateTopic={setGenerateTopic}
+            generateDifficulty={generateDifficulty}
+            setGenerateDifficulty={setGenerateDifficulty}
+            isGenerating={isGenerating}
+            generateStatus={generateStatus}
+            handleGenerateMaterial={handleGenerateMaterial}
+            handleGenerateForWeakness={handleGenerateForWeakness}
+            getWeaknessColor={getWeaknessColor}
+          />
+        )}
+
+        {activeTab === 'quizzes' && (
+          <QuizzesTab
+            quizzes={quizzes}
+            setShowCreateQuiz={setShowCreateQuiz}
+            setShowAIQuizModal={setShowAIQuizModal}
+            setAiQuizError={setAiQuizError}
+            setAiQuizResult={setAiQuizResult}
+            handleOpenTopicGenerator={handleOpenTopicGenerator}
+            handleViewQuizResults={handleViewQuizResults}
+            handleEditQuiz={handleEditQuiz}
+            handleDeleteQuiz={handleDeleteQuiz}
+          />
+        )}
+
+        {activeTab === 'approvals' && (
+          <ApprovalsTab
+            pendingMaterials={pendingMaterials}
+            handleApproveMaterial={handleApproveMaterial}
+            setShowRejectConfirm={setShowRejectConfirm}
+          />
+        )}
+
         {/* Analytics Tab */}
         {activeTab === 'analytics' && (
           <div>
@@ -789,13 +1040,10 @@ function TeacherDashboard() {
                   {batchResult.failed > 0 && <span> ({batchResult.failed} failed)</span>}
                 </div>
               )}
-          </div>
-              )}
+            </div>
           </div>
         )}
       </div>
-  );
-}
 
       {/* Create Quiz Modal */}
       {showCreateQuiz && (
@@ -1203,14 +1451,38 @@ function TeacherDashboard() {
                 <div className="space-y-3">
                   <div>
                     <label className="block text-sm font-medium text-gray-700 mb-1">Topic</label>
+                    <div className="relative">
                     <input
                       type="text"
                       value={topicInput}
-                      onChange={(e) => setTopicInput(e.target.value)}
+                      onChange={(e) => handleTopicInputChange(e.target.value, true)}
+                      onFocus={() => topicInput.length >= 2 && setTopicSuggestionVisible(true)}
                       placeholder="e.g., Solving linear equations"
                       className="w-full px-3 py-2 text-sm border rounded focus:outline-none focus:ring-2"
                       style={{ borderColor: '#d1d5db' }}
                     />
+                    {topicSuggestionVisible && aiQuizSuggestions.length > 0 && (
+                      <ul className="absolute z-10 w-full mt-1 bg-white border rounded shadow-lg max-h-40 overflow-y-auto">
+                        {aiQuizSuggestions.map((s, i) => (
+                          <li key={i}>
+                            <button
+                              type="button"
+                              className="w-full text-left px-3 py-2 text-sm hover:bg-blue-50"
+                              onClick={() => {
+                                setTopicInput(s.topic);
+                                setTopicSuggestionVisible(false);
+                                setAiQuizSuggestions([]);
+                                if (s.grade_level) setTopicGradeLevel(String(s.grade_level));
+                              }}
+                            >
+                              {s.topic}
+                              {s.grade_level && <span className="text-xs text-gray-500 ml-2">Grade {s.grade_level}</span>}
+                            </button>
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                    </div>
                   </div>
                   <div className="grid grid-cols-2 gap-3">
                     <div>

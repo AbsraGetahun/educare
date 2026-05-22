@@ -28,11 +28,22 @@ function Register() {
     setLoading(true);
     
     try {
-      await register(
-        formData.full_name, formData.email, formData.password,
-        formData.grade_level, formData.section
-      );
-      setSuccess('Registration successful! Redirecting to login...');
+      const data = await register({
+        full_name: formData.full_name,
+        email: formData.email,
+        password: formData.password,
+        grade_level: formData.grade_level,
+        section: formData.section
+      });
+      if (data.token) {
+        localStorage.setItem('token', data.token);
+        localStorage.setItem('user_id', data.user_id);
+        localStorage.setItem('full_name', data.full_name);
+        localStorage.setItem('role', data.role);
+        navigate('/student/dashboard');
+        return;
+      }
+      setSuccess(data.message || 'Account created successfully! You can now login.');
       setTimeout(() => navigate('/login'), 2000);
     } catch (err) {
       setError(err.response?.data?.error || 'Registration failed');

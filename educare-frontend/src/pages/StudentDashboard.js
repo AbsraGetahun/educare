@@ -202,6 +202,26 @@ function StudentDashboard() {
 
   const closePractice = () => { setPracticeMode(null); setPracticeQuestions([]); setPracticeAnswers({}); setPracticeResult(null); setPracticeIdx(0); };
 
+  const downloadMaterialPdf = (material) => {
+    const cite = material.source_citation || '';
+    const src = material.source_file
+      ? `${material.source_file}${material.source_page ? `, p.${material.source_page}` : ''}`
+      : cite;
+    const win = window.open('', '_blank');
+    if (!win) return;
+    win.document.write(`
+      <!DOCTYPE html><html><head><title>${material.title}</title>
+      <style>body{font-family:system-ui,sans-serif;padding:24px;color:#374151;} h1{color:#2563eb;} .cite{font-size:12px;color:#6b7280;margin-bottom:16px;}</style>
+      </head><body>
+      <h1>${material.title}</h1>
+      <p class="cite">Source: ${src}</p>
+      ${material.content || ''}
+      </body></html>`);
+    win.document.close();
+    win.focus();
+    win.print();
+  };
+
   useEffect(() => {
     const fetchData = async () => {
       try {
@@ -568,8 +588,16 @@ function StudentDashboard() {
                   <div key={material.material_id}>
                     <MaterialCard material={material} />
                     {/* Practice & Rating bar */}
-                    <div className="flex items-center gap-3 mt-2 ml-1">
+                    <div className="flex items-center gap-3 mt-2 ml-1 flex-wrap">
                       <button
+                        type="button"
+                        onClick={() => downloadMaterialPdf(material)}
+                        className="px-3 py-1.5 text-xs rounded-md font-medium border border-gray-300 text-gray-700 hover:bg-gray-50"
+                      >
+                        Download PDF
+                      </button>
+                      <button
+                        type="button"
                         onClick={() => startPracticeMode(material)}
                         className="px-3 py-1.5 text-xs rounded-md font-medium text-white flex items-center gap-1 hover:opacity-90"
                         style={{ backgroundColor: '#7c3aed' }}

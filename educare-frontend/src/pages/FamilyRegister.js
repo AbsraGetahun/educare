@@ -17,9 +17,19 @@ function FamilyRegister() {
     setLoading(true);
 
     try {
-      await familyRegister(fullName, email, password, studentEmail);
-      alert('Registration successful! Please login.');
-      navigate('/family/login');
+      const data = await familyRegister(fullName, email, password, studentEmail);
+      if (data.token) {
+        localStorage.setItem('token', data.token);
+        localStorage.setItem('user_id', data.user_id);
+        localStorage.setItem('full_name', data.full_name);
+        localStorage.setItem('role', data.role);
+        if (data.students) {
+          localStorage.setItem('students', JSON.stringify(data.students));
+        }
+        navigate('/family/dashboard');
+        return;
+      }
+      navigate('/family/login', { state: { message: data.message || 'Account created successfully! You can now login.' } });
     } catch (err) {
       setError(err.response?.data?.error || 'Registration failed');
     } finally {
