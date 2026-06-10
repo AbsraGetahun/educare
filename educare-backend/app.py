@@ -104,8 +104,8 @@ db_config = {
     'password': os.getenv('MYSQL_PASSWORD'),
     'database': os.getenv('MYSQL_DB'),
     'port': 25901,
-    'charset': 'utf8mb4',
-    'ssl': {'ca': '/opt/render/project/src/ca.pem'}  # Render path
+    'charset': 'utf8mb4'
+    # NO SSL
 }
 def get_db_connection():
     return pymysql.connect(**db_config)
