@@ -2,7 +2,7 @@ from flask import Flask, jsonify, request, Response
 from flask_cors import CORS
 from flask_jwt_extended import create_access_token, JWTManager, jwt_required, get_jwt_identity
 import pymysql
-pymysql.install_as_MySQLdb()
+
 import random
 import json
 import os
@@ -98,15 +98,15 @@ app.config['JWT_ACCESS_TOKEN_EXPIRES'] = False  # tokens don't expire in dev
 jwt = JWTManager(app)
 
 # Database configuration (overrideable via .env)
+
 db_config = {
-    'host': os.getenv('DB_HOST', 'localhost'),
-    'user': os.getenv('DB_USER', 'root'),
-    'password': os.getenv('DB_PASSWORD', 'absra123'),
-    'database': os.getenv('DB_NAME', 'educare'),
+    'host': os.getenv('MYSQL_HOST'),
+    'user': os.getenv('MYSQL_USER'),
+    'password': os.getenv('MYSQL_PASSWORD'),
+    'database': os.getenv('MYSQL_DB'),
     'charset': 'utf8mb4'
 }
 
-# Function to get database connection
 def get_db_connection():
     return pymysql.connect(**db_config)
 
