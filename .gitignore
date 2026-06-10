@@ -1,14 +1,41 @@
-
+# Node
 node_modules/
-venv/
 build/
+
+# Python
+venv/
 __pycache__/
+*.pyc
+
+# Environment
 .env
+
+# Uploads / AI data (if needed locally only)
 uploads/
+
+# FAISS + generated AI index (ONLY if you don't want to version it)
 faiss_index/
-venv/ 
-__pycache__/ 
-*.pyc 
-.env 
-educare-backend/curriculum_data/*.pdf 
-educare-backend/curriculum_data/*.pdf 
+
+# Curriculum data PDFs
+educare-backend/curriculum_data/*.pdf
+educare-backend/curriculum_data/# Node
+node_modules/
+build/
+
+# Python
+venv/
+__pycache__/
+*.pyc
+
+# Environment
+.env
+
+# Uploads / AI data (if needed locally only)
+uploads/
+
+# FAISS + generated AI index (ONLY if you don't want to version it)
+faiss_index/
+
+# Curriculum data PDFs
+educare-backend/curriculum_data/*.pdf
+educare-backend/curriculum_data/
