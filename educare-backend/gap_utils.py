@@ -51,8 +51,18 @@ def fetch_student_gaps(cursor, user_id):
     return gaps
 
 
-def fetch_struggling_students_for_topic(cursor, topic_id):
+def _grade_filter_clause(grade_level, alias='s_qa'):
+    if grade_level is None:
+        return '', []
+    return (
+        f" AND {alias}.user_id IN (SELECT user_id FROM students WHERE grade_level = %s)",
+        [grade_level],
+    )
+
+
+def fetch_struggling_students_for_topic(cursor, topic_id, grade_level=None):
     """Students below 70% mastery on a topic; returns user_id as student_id."""
+    grade_clause, grade_params = _grade_filter_clause(grade_level)
     cursor.execute(
         f"""
         SELECT u.user_id, u.full_name,
@@ -61,12 +71,12 @@ def fetch_struggling_students_for_topic(cursor, topic_id):
         JOIN quizzes q ON qa.quiz_id = q.quiz_id
         {QUIZ_STUDENT_JOIN}
         JOIN users u ON s_qa.user_id = u.user_id
-        WHERE q.topic_id = %s
+        WHERE q.topic_id = %s{grade_clause}
         GROUP BY u.user_id, u.full_name
         HAVING avg_pct IS NOT NULL AND avg_pct < 70
         ORDER BY avg_pct ASC
         """,
-        (topic_id,),
+        (topic_id, *grade_params),
     )
     return [
         {
@@ -78,7 +88,8 @@ def fetch_struggling_students_for_topic(cursor, topic_id):
     ]
 
 
-def count_students_mastered_topic(cursor, topic_id):
+def count_students_mastered_topic(cursor, topic_id, grade_level=None):
+    grade_clause, grade_params = _grade_filter_clause(grade_level)
     cursor.execute(
         f"""
         SELECT COUNT(*) FROM (
@@ -86,18 +97,19 @@ def count_students_mastered_topic(cursor, topic_id):
             FROM quiz_attempt qa
             JOIN quizzes q ON qa.quiz_id = q.quiz_id
             {QUIZ_STUDENT_JOIN}
-            WHERE q.topic_id = %s
+            WHERE q.topic_id = %s{grade_clause}
             GROUP BY s_qa.user_id
             HAVING AVG(qa.score * 100.0 / NULLIF(q.total_marks, 0)) >= 70
         ) mastered
         """,
-        (topic_id,),
+        (topic_id, *grade_params),
     )
     row = cursor.fetchone()
     return row[0] if row else 0
 
 
-def count_students_struggling_topic(cursor, topic_id):
+def count_students_struggling_topic(cursor, topic_id, grade_level=None):
+    grade_clause, grade_params = _grade_filter_clause(grade_level)
     cursor.execute(
         f"""
         SELECT COUNT(*) FROM (
@@ -105,31 +117,48 @@ def count_students_struggling_topic(cursor, topic_id):
             FROM quiz_attempt qa
             JOIN quizzes q ON qa.quiz_id = q.quiz_id
             {QUIZ_STUDENT_JOIN}
-            WHERE q.topic_id = %s
+            WHERE q.topic_id = %s{grade_clause}
             GROUP BY s_qa.user_id
             HAVING AVG(qa.score * 100.0 / NULLIF(q.total_marks, 0)) < 70
         ) struggling
         """,
-        (topic_id,),
+        (topic_id, *grade_params),
     )
     row = cursor.fetchone()
     return row[0] if row else 0
 
 
-def count_students_untouched_topic(cursor, topic_id):
-    cursor.execute(
-        f"""
-        SELECT COUNT(*) FROM users u
-        WHERE u.role = 'student'
-        AND u.user_id NOT IN (
-            SELECT DISTINCT s_qa.user_id
-            FROM quiz_attempt qa
-            JOIN quizzes q ON qa.quiz_id = q.quiz_id
-            {QUIZ_STUDENT_JOIN}
-            WHERE q.topic_id = %s
+def count_students_untouched_topic(cursor, topic_id, grade_level=None):
+    if grade_level is not None:
+        cursor.execute(
+            f"""
+            SELECT COUNT(*) FROM users u
+            JOIN students s ON u.user_id = s.user_id
+            WHERE u.role = 'student' AND s.grade_level = %s
+            AND u.user_id NOT IN (
+                SELECT DISTINCT s_qa.user_id
+                FROM quiz_attempt qa
+                JOIN quizzes q ON qa.quiz_id = q.quiz_id
+                {QUIZ_STUDENT_JOIN}
+                WHERE q.topic_id = %s
+            )
+            """,
+            (grade_level, topic_id),
         )
-        """,
-        (topic_id,),
-    )
+    else:
+        cursor.execute(
+            f"""
+            SELECT COUNT(*) FROM users u
+            WHERE u.role = 'student'
+            AND u.user_id NOT IN (
+                SELECT DISTINCT s_qa.user_id
+                FROM quiz_attempt qa
+                JOIN quizzes q ON qa.quiz_id = q.quiz_id
+                {QUIZ_STUDENT_JOIN}
+                WHERE q.topic_id = %s
+            )
+            """,
+            (topic_id,),
+        )
     row = cursor.fetchone()
     return row[0] if row else 0

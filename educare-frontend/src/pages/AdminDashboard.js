@@ -1,6 +1,27 @@
-import React, { useState, useEffect } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { adminGetUsers, adminGetUsersByRole, adminCreateUser, adminUpdateUser, adminDeleteUser, adminGetStats, getStudents } from '../services/api';
+import {
+  adminCreateUser,
+  adminDeleteUser,
+  adminGetStats,
+  adminGetUsers,
+  adminGetUsersByRole,
+  adminUpdateUser,
+  getStudents,
+} from '../services/api';
+
+const emptyForm = {
+  full_name: '',
+  email: '',
+  password: '',
+  role: 'student',
+  grade_level: '',
+  section: '',
+  qualification: '',
+  subject: '',
+  student_ids: [],
+  relationship: 'parent',
+};
 
 function AdminDashboard() {
   const [activeTab, setActiveTab] = useState('overview');
@@ -16,33 +37,16 @@ function AdminDashboard() {
   const [filterRole, setFilterRole] = useState('all');
   const [searchTerm, setSearchTerm] = useState('');
   const [studentsList, setStudentsList] = useState([]);
+  const [userForm, setUserForm] = useState(emptyForm);
+
   const navigate = useNavigate();
   const fullName = localStorage.getItem('full_name');
 
-  const [userForm, setUserForm] = useState({
-    full_name: '',
-    email: '',
-    password: '',
-    role: 'student',
-    grade_level: '',
-    section: '',
-    qualification: '',
-    subject: '',
-    student_ids: [],
-    relationship: 'parent'
-  });
-
-  useEffect(() => {
-    fetchData();
-  }, []);
-
   const fetchData = async () => {
     setLoading(true);
+    setError('');
     try {
-      const [usersData, statsData] = await Promise.all([
-        adminGetUsers(),
-        adminGetStats()
-      ]);
+      const [usersData, statsData] = await Promise.all([adminGetUsers(), adminGetStats()]);
       setUsers(usersData.users || []);
       setStats(statsData);
     } catch (err) {
@@ -52,9 +56,23 @@ function AdminDashboard() {
     }
   };
 
+  useEffect(() => {
+    fetchData();
+  }, []);
+
+  const loadStudents = async () => {
+    try {
+      const data = await getStudents();
+      setStudentsList(data.students || []);
+    } catch (_) {
+      setStudentsList([]);
+    }
+  };
+
   const handleFilterChange = async (role) => {
     setFilterRole(role);
     setLoading(true);
+    setError('');
     try {
       if (role === 'all') {
         const usersData = await adminGetUsers();
@@ -70,10 +88,92 @@ function AdminDashboard() {
     }
   };
 
+  const filteredUsers = useMemo(() => {
+    const term = searchTerm.trim().toLowerCase();
+    if (!term) return users;
+    return users.filter(
+      (u) => u.full_name.toLowerCase().includes(term) || u.email.toLowerCase().includes(term)
+    );
+  }, [users, searchTerm]);
+
+  const getRoleBadgeColor = (role) => {
+    switch (role) {
+      case 'admin':
+        return 'bg-purple-100 text-purple-700';
+      case 'teacher':
+        return 'bg-teal-100 text-teal-700';
+      case 'student':
+        return 'bg-emerald-100 text-emerald-700';
+      case 'family':
+        return 'bg-amber-100 text-amber-700';
+      default:
+        return 'bg-gray-100 text-gray-700';
+    }
+  };
+
+  const resetForm = () => setUserForm(emptyForm);
+
+  const openAddModal = async () => {
+    resetForm();
+    await loadStudents();
+    setShowAddUser(true);
+  };
+
+  const openEditModal = async (user) => {
+    setSelectedUser(user);
+    setUserForm({
+      full_name: user.full_name,
+      email: user.email,
+      password: '',
+      role: user.role,
+      grade_level: user.grade_level || user.assigned_grade || '',
+      section: user.section || '',
+      qualification: user.qualification || '',
+      subject: user.subject || '',
+      student_ids: [],
+      relationship: user.relationship || 'parent',
+    });
+    await loadStudents();
+    setShowEditUser(true);
+  };
+
+  const openDeleteConfirm = (user) => {
+    setSelectedUser(user);
+    setShowDeleteConfirm(true);
+  };
+
+  const validateForm = () => {
+    if (!userForm.full_name || !userForm.email || !userForm.role) return 'Please fill required fields.';
+    if (showAddUser && !userForm.password) return 'Password is required for new users.';
+
+    if (userForm.role === 'student') {
+      if (!userForm.grade_level || !userForm.section) return 'Grade level and section are required for students.';
+    }
+
+    if (userForm.role === 'teacher') {
+      if (!userForm.qualification || !userForm.subject) return 'Qualification and subject are required for teachers.';
+      const tg = parseInt(userForm.grade_level, 10);
+      if (![9, 10, 11, 12].includes(tg)) return 'Assigned grade (9, 10, 11, or 12) is required for teachers.';
+    }
+
+    if (userForm.role === 'family') {
+      if (!userForm.student_ids || userForm.student_ids.length === 0) {
+        return 'Family users must be linked to at least one student.';
+      }
+    }
+
+    return '';
+  };
+
   const handleAddUser = async (e) => {
     e.preventDefault();
     setError('');
     setSuccess('');
+    const v = validateForm();
+    if (v) {
+      setError(v);
+      return;
+    }
     try {
       await adminCreateUser(userForm);
       setSuccess('User created successfully!');
@@ -87,8 +187,14 @@ function AdminDashboard() {
 
   const handleEditUser = async (e) => {
     e.preventDefault();
+    if (!selectedUser) return;
     setError('');
     setSuccess('');
+    const v = validateForm();
+    if (v) {
+      setError(v);
+      return;
+    }
     try {
       await adminUpdateUser(selectedUser.user_id, userForm);
       setSuccess('User updated successfully!');
@@ -102,6 +208,7 @@ function AdminDashboard() {
   };
 
   const handleDeleteUser = async () => {
+    if (!selectedUser) return;
     setError('');
     setSuccess('');
     try {
@@ -115,77 +222,147 @@ function AdminDashboard() {
     }
   };
 
-  const openEditModal = (user) => {
-    setSelectedUser(user);
-    setUserForm({
-      full_name: user.full_name,
-      email: user.email,
-      password: '',
-      role: user.role,
-      grade_level: user.grade_level || '',
-      section: user.section || '',
-      qualification: user.qualification || '',
-      subject: user.subject || '',
-      student_ids: [],
-      relationship: 'parent'
-    });
-    setShowEditUser(true);
-  };
-
-  const openDeleteConfirm = (user) => {
-    setSelectedUser(user);
-    setShowDeleteConfirm(true);
-  };
-
-  const resetForm = () => {
-    setUserForm({
-      full_name: '',
-      email: '',
-      password: '',
-      role: 'student',
-      grade_level: '',
-      section: '',
-      qualification: '',
-      subject: '',
-      student_ids: [],
-      relationship: 'parent'
-    });
-  };
-
   const handleLogout = () => {
     localStorage.clear();
-    navigate('/admin/login');
+    navigate('/');
   };
 
-  const loadStudents = async () => {
-    try {
-      const data = await getStudents();
-      setStudentsList(data.students || []);
-    } catch (err) {
-      // silently fail - students list will be empty
-    }
-  };
+  const RoleSpecificFields = () => (
+    <>
+      {userForm.role === 'student' && (
+        <>
+          <div>
+            <label className="block text-xs font-semibold text-gray-600 mb-1">Grade Level *</label>
+            <input
+              type="text"
+              value={userForm.grade_level}
+              onChange={(e) => setUserForm({ ...userForm, grade_level: e.target.value })}
+              className="w-full px-3 py-1.5 border border-gray-200 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-teal-500 focus:border-transparent"
+              required
+            />
+          </div>
+          <div>
+            <label className="block text-xs font-semibold text-gray-600 mb-1">Section *</label>
+            <input
+              type="text"
+              value={userForm.section}
+              onChange={(e) => setUserForm({ ...userForm, section: e.target.value })}
+              className="w-full px-3 py-1.5 border border-gray-200 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-teal-500 focus:border-transparent"
+              required
+            />
+          </div>
+        </>
+      )}
 
-  const filteredUsers = users.filter(user =>
-    user.full_name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-    user.email.toLowerCase().includes(searchTerm.toLowerCase())
+      {userForm.role === 'teacher' && (
+        <>
+          <div>
+            <label className="block text-xs font-semibold text-gray-600 mb-1">Assigned Grade *</label>
+            <select
+              value={userForm.grade_level}
+              onChange={(e) => setUserForm({ ...userForm, grade_level: e.target.value })}
+              className="w-full px-3 py-1.5 border border-gray-200 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-teal-500 focus:border-transparent"
+              required
+            >
+              <option value="">Select grade</option>
+              <option value="9">Grade 9</option>
+              <option value="10">Grade 10</option>
+              <option value="11">Grade 11</option>
+              <option value="12">Grade 12</option>
+            </select>
+            <p className="text-[10px] text-gray-500 mt-1">Teacher will only see and manage students in this grade.</p>
+          </div>
+          <div>
+            <label className="block text-xs font-semibold text-gray-600 mb-1">Qualification *</label>
+            <input
+              type="text"
+              value={userForm.qualification}
+              onChange={(e) => setUserForm({ ...userForm, qualification: e.target.value })}
+              className="w-full px-3 py-1.5 border border-gray-200 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-teal-500 focus:border-transparent"
+              required
+            />
+          </div>
+          <div>
+            <label className="block text-xs font-semibold text-gray-600 mb-1">Subject *</label>
+            <input
+              type="text"
+              value={userForm.subject}
+              onChange={(e) => setUserForm({ ...userForm, subject: e.target.value })}
+              className="w-full px-3 py-1.5 border border-gray-200 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-teal-500 focus:border-transparent"
+              required
+            />
+          </div>
+        </>
+      )}
+
+      {userForm.role === 'family' && (
+        <>
+          <div>
+            <label className="block text-xs font-semibold text-gray-600 mb-1">Relationship</label>
+            <select
+              value={userForm.relationship}
+              onChange={(e) => setUserForm({ ...userForm, relationship: e.target.value })}
+              className="w-full px-3 py-1.5 border border-gray-200 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-teal-500 focus:border-transparent"
+            >
+              <option value="parent">Parent</option>
+              <option value="guardian">Guardian</option>
+              <option value="sibling">Sibling</option>
+            </select>
+          </div>
+
+          <div>
+            <label className="block text-xs font-semibold text-gray-600 mb-1">Link to Student(s) *</label>
+            {studentsList.length === 0 ? (
+              <p className="text-xs text-gray-400 py-2">No students available. Add students first.</p>
+            ) : (
+              <div className="border border-gray-200 rounded-md max-h-40 overflow-y-auto">
+                {studentsList.map((student) => (
+                  <label
+                    key={student.user_id}
+                    className="flex items-center gap-2 px-3 py-1.5 hover:bg-gray-50 cursor-pointer border-b border-gray-100 last:border-0"
+                  >
+                    <input
+                      type="checkbox"
+                      checked={userForm.student_ids.includes(student.user_id)}
+                      onChange={(e) => {
+                        if (e.target.checked) {
+                          setUserForm({
+                            ...userForm,
+                            student_ids: [...userForm.student_ids, student.user_id],
+                          });
+                        } else {
+                          setUserForm({
+                            ...userForm,
+                            student_ids: userForm.student_ids.filter((id) => id !== student.user_id),
+                          });
+                        }
+                      }}
+                      className="rounded border-gray-300 text-teal-600 focus:ring-teal-500"
+                    />
+                    <span className="text-sm text-gray-700">{student.full_name}</span>
+                    <span className="text-[10px] text-gray-400 ml-auto">
+                      Grade {student.grade_level}-{student.section}
+                    </span>
+                  </label>
+                ))}
+              </div>
+            )}
+            {userForm.student_ids.length > 0 && (
+              <p className="text-[10px] text-gray-500 mt-1">
+                {userForm.student_ids.length} student(s) selected
+              </p>
+            )}
+          </div>
+        </>
+      )}
+    </>
   );
-
-  const getRoleBadgeColor = (role) => {
-    switch (role) {
-      case 'admin': return 'bg-purple-100 text-purple-700';
-      case 'teacher': return 'bg-blue-100 text-blue-700';
-      case 'student': return 'bg-green-100 text-green-700';
-      case 'family': return 'bg-amber-100 text-amber-700';
-      default: return 'bg-gray-100 text-gray-700';
-    }
-  };
 
   if (loading && !stats) {
     return (
-      <div className="min-h-screen flex items-center justify-center bg-[#f3f4f6]">
+      <div className="min-h-screen flex items-center justify-center bg-[#F3F4F6]">
         <div className="flex items-center gap-3">
-          <div className="w-6 h-6 border-2 border-[#2563eb] border-t-transparent rounded-full animate-spin"></div>
+          <div className="w-6 h-6 border-2 border-teal-500 border-t-transparent rounded-full animate-spin"></div>
           <span className="text-gray-500 text-sm">Loading dashboard...</span>
         </div>
       </div>
@@ -193,19 +370,25 @@ function AdminDashboard() {
   }
 
   return (
-    <div className="min-h-screen bg-[#f3f4f6]">
-      {/* Navbar */}
+    <div className="min-h-screen bg-[#F3F4F6]">
       <nav className="bg-white border-b border-gray-200 sticky top-0 z-50">
         <div className="max-w-7xl mx-auto px-4 h-14 flex justify-between items-center">
           <div className="flex items-center gap-2">
-            <div className="w-8 h-8 bg-[#2563eb] rounded-lg flex items-center justify-center">
+            <div className="w-8 h-8 bg-teal-500 rounded-lg flex items-center justify-center">
               <svg className="w-4 h-4 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  strokeWidth={2}
+                  d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"
+                />
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
               </svg>
             </div>
             <span className="text-base font-bold text-gray-900">EDUCARE</span>
-            <span className="text-[10px] font-medium text-[#2563eb] bg-blue-50 px-1.5 py-0.5 rounded">Admin</span>
+            <span className="text-[10px] font-medium text-teal-600 bg-teal-50 px-1.5 py-0.5 rounded">
+              Admin
+            </span>
           </div>
           <div className="flex items-center gap-3">
             <span className="text-sm text-gray-600 hidden sm:block">{fullName}</span>
@@ -220,30 +403,32 @@ function AdminDashboard() {
       </nav>
 
       <div className="max-w-7xl mx-auto px-4 py-4">
-        {/* Messages */}
         {error && (
           <div className="bg-red-50 border border-red-200 text-red-700 px-3 py-2 rounded-lg mb-4 text-sm">
             {error}
-            <button onClick={() => setError('')} className="float-right text-red-500 hover:text-red-700">&times;</button>
+            <button onClick={() => setError('')} className="float-right text-red-500 hover:text-red-700">
+              ×
+            </button>
           </div>
         )}
         {success && (
           <div className="bg-green-50 border border-green-200 text-green-700 px-3 py-2 rounded-lg mb-4 text-sm">
             {success}
-            <button onClick={() => setSuccess('')} className="float-right text-green-500 hover:text-green-700">&times;</button>
+            <button onClick={() => setSuccess('')} className="float-right text-green-500 hover:text-green-700">
+              ×
+            </button>
           </div>
         )}
 
-        {/* Stats Cards */}
         {stats && (
           <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3 mb-4">
             {[
-              { label: 'Students', value: stats.users_by_role?.student || 0, color: 'text-green-600' },
-              { label: 'Teachers', value: stats.users_by_role?.teacher || 0, color: 'text-blue-600' },
+              { label: 'Students', value: stats.users_by_role?.student || 0, color: 'text-emerald-600' },
+              { label: 'Teachers', value: stats.users_by_role?.teacher || 0, color: 'text-teal-600' },
               { label: 'Families', value: stats.users_by_role?.family || 0, color: 'text-amber-600' },
               { label: 'Admins', value: stats.users_by_role?.admin || 0, color: 'text-purple-600' },
-              { label: 'Quizzes', value: stats.total_quizzes || 0, color: 'text-indigo-600' },
-              { label: 'Avg Score', value: `${stats.average_score || 0}%`, color: 'text-pink-600' },
+              { label: 'Quizzes', value: stats.total_quizzes || 0, color: 'text-teal-600' },
+              { label: 'Avg Score', value: `${stats.average_score || 0}%`, color: 'text-teal-600' },
             ].map((stat) => (
               <div key={stat.label} className="bg-white rounded-lg shadow-sm p-3">
                 <div className="text-[10px] font-medium text-gray-500 uppercase tracking-wide">{stat.label}</div>
@@ -253,14 +438,13 @@ function AdminDashboard() {
           </div>
         )}
 
-        {/* Tabs */}
         <div className="bg-white border-b border-gray-200 rounded-t-lg">
           <div className="flex gap-1 px-4">
             <button
               onClick={() => setActiveTab('overview')}
               className={`py-2.5 px-4 text-sm font-medium transition border-b-2 ${
                 activeTab === 'overview'
-                  ? 'text-[#2563eb] border-[#2563eb]'
+                  ? 'text-teal-600 border-teal-500'
                   : 'text-gray-500 border-transparent hover:text-gray-700 hover:border-gray-300'
               }`}
             >
@@ -269,16 +453,14 @@ function AdminDashboard() {
           </div>
         </div>
 
-        {/* User Management */}
         {activeTab === 'overview' && (
           <div className="bg-white rounded-b-lg shadow-sm">
-            {/* Filters and Search */}
             <div className="px-4 pt-3 pb-3 border-b border-gray-100 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3">
               <div className="flex gap-1.5 flex-wrap">
                 {[
-                  { key: 'all', label: 'All', activeColor: 'bg-[#2563eb] text-white' },
-                  { key: 'student', label: 'Students', activeColor: 'bg-green-600 text-white' },
-                  { key: 'teacher', label: 'Teachers', activeColor: 'bg-blue-600 text-white' },
+                  { key: 'all', label: 'All', activeColor: 'bg-teal-500 text-white' },
+                  { key: 'student', label: 'Students', activeColor: 'bg-emerald-600 text-white' },
+                  { key: 'teacher', label: 'Teachers', activeColor: 'bg-teal-500 text-white' },
                   { key: 'family', label: 'Families', activeColor: 'bg-amber-600 text-white' },
                   { key: 'admin', label: 'Admins', activeColor: 'bg-purple-600 text-white' },
                 ].map((btn) => (
@@ -286,9 +468,7 @@ function AdminDashboard() {
                     key={btn.key}
                     onClick={() => handleFilterChange(btn.key)}
                     className={`px-3 py-1.5 rounded-md text-xs font-medium transition ${
-                      filterRole === btn.key
-                        ? btn.activeColor
-                        : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+                      filterRole === btn.key ? btn.activeColor : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
                     }`}
                   >
                     {btn.label}
@@ -301,28 +481,39 @@ function AdminDashboard() {
                   placeholder="Search..."
                   value={searchTerm}
                   onChange={(e) => setSearchTerm(e.target.value)}
-                  className="px-3 py-1.5 border border-gray-200 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent w-full sm:w-48"
+                  className="px-3 py-1.5 border border-gray-200 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-teal-500 focus:border-transparent w-full sm:w-48"
                 />
                 <button
-                  onClick={() => { resetForm(); setShowAddUser(true); loadStudents(); }}
-                  className="bg-[#2563eb] text-white px-3 py-1.5 rounded-md text-sm font-medium hover:bg-[#1d4ed8] transition whitespace-nowrap"
+                  onClick={openAddModal}
+                  className="bg-teal-500 text-white px-3 py-1.5 rounded-md text-sm font-medium hover:bg-teal-600 transition whitespace-nowrap"
                 >
                   + Add User
                 </button>
               </div>
             </div>
 
-            {/* Users Table */}
             <div className="overflow-x-auto">
               <table className="min-w-full">
                 <thead>
                   <tr className="bg-gray-50 border-b border-gray-100">
-                    <th className="px-3 py-2 text-left text-[10px] font-semibold text-gray-500 uppercase tracking-wider">ID</th>
-                    <th className="px-3 py-2 text-left text-[10px] font-semibold text-gray-500 uppercase tracking-wider">Name</th>
-                    <th className="px-3 py-2 text-left text-[10px] font-semibold text-gray-500 uppercase tracking-wider">Email</th>
-                    <th className="px-3 py-2 text-left text-[10px] font-semibold text-gray-500 uppercase tracking-wider">Role</th>
-                    <th className="px-3 py-2 text-left text-[10px] font-semibold text-gray-500 uppercase tracking-wider">Created</th>
-                    <th className="px-3 py-2 text-left text-[10px] font-semibold text-gray-500 uppercase tracking-wider">Actions</th>
+                    <th className="px-3 py-2 text-left text-[10px] font-semibold text-gray-500 uppercase tracking-wider">
+                      ID
+                    </th>
+                    <th className="px-3 py-2 text-left text-[10px] font-semibold text-gray-500 uppercase tracking-wider">
+                      Name
+                    </th>
+                    <th className="px-3 py-2 text-left text-[10px] font-semibold text-gray-500 uppercase tracking-wider">
+                      Email
+                    </th>
+                    <th className="px-3 py-2 text-left text-[10px] font-semibold text-gray-500 uppercase tracking-wider">
+                      Role
+                    </th>
+                    <th className="px-3 py-2 text-left text-[10px] font-semibold text-gray-500 uppercase tracking-wider">
+                      Created
+                    </th>
+                    <th className="px-3 py-2 text-left text-[10px] font-semibold text-gray-500 uppercase tracking-wider">
+                      Actions
+                    </th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-100">
@@ -339,7 +530,11 @@ function AdminDashboard() {
                         <td className="px-3 py-2 text-sm font-medium text-gray-900">{user.full_name}</td>
                         <td className="px-3 py-2 text-sm text-gray-500">{user.email}</td>
                         <td className="px-3 py-2">
-                          <span className={`px-2 py-0.5 text-[10px] font-semibold rounded-full ${getRoleBadgeColor(user.role)}`}>
+                          <span
+                            className={`px-2 py-0.5 text-[10px] font-semibold rounded-full ${getRoleBadgeColor(
+                              user.role
+                            )}`}
+                          >
                             {user.role}
                           </span>
                         </td>
@@ -350,7 +545,7 @@ function AdminDashboard() {
                           <div className="flex gap-2">
                             <button
                               onClick={() => openEditModal(user)}
-                              className="text-[#2563eb] hover:text-[#1d4ed8] text-xs font-medium"
+                              className="text-teal-600 hover:text-teal-700 text-xs font-medium"
                             >
                               Edit
                             </button>
@@ -367,70 +562,30 @@ function AdminDashboard() {
                   )}
                 </tbody>
               </table>
-                      </div>
-                    </div>
-                  )}
-                  {userForm.role === 'family' && (
-                    <>
-                      <div>
-                        <label className="block text-xs font-semibold text-gray-600 mb-1">Relationship</label>
-                        <select
-                          value={userForm.relationship}
-                          onChange={(e) => setUserForm({ ...userForm, relationship: e.target.value })}
-                          className="w-full px-3 py-1.5 border border-gray-200 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                        >
-                          <option value="parent">Parent</option>
-                          <option value="guardian">Guardian</option>
-                          <option value="sibling">Sibling</option>
-                        </select>
-                      </div>
-                      <div>
-                        <label className="block text-xs font-semibold text-gray-600 mb-1">Link to Student(s) *</label>
-                        {studentsList.length === 0 ? (
-                          <p className="text-xs text-gray-400 py-2">No students available. Add students first.</p>
-                        ) : (
-                          <div className="border border-gray-200 rounded-md max-h-40 overflow-y-auto">
-                            {studentsList.map((student) => (
-                              <label key={student.user_id} className="flex items-center gap-2 px-3 py-1.5 hover:bg-gray-50 cursor-pointer border-b border-gray-100 last:border-0">
-                                <input
-                                  type="checkbox"
-                                  checked={userForm.student_ids.includes(student.user_id)}
-                                  onChange={(e) => {
-                                    if (e.target.checked) {
-                                      setUserForm({ ...userForm, student_ids: [...userForm.student_ids, student.user_id] });
-                                    } else {
-                                      setUserForm({ ...userForm, student_ids: userForm.student_ids.filter(id => id !== student.user_id) });
-                                    }
-                                  }}
-                                  className="rounded border-gray-300 text-[#2563eb] focus:ring-blue-500"
-                                />
-                                <span className="text-sm text-gray-700">{student.full_name}</span>
-                                <span className="text-[10px] text-gray-400 ml-auto">Grade {student.grade_level}-{student.section}</span>
-                              </label>
-                            ))}
-                          </div>
-                        )}
-                        {userForm.student_ids.length > 0 && (
-                          <p className="text-[10px] text-gray-500 mt-1">{userForm.student_ids.length} student(s) selected</p>
-                        )}
-                      </div>
-                    </>
-                  )}
-                </div>
+            </div>
+          </div>
+        )}
+      </div>
 
-      {/* Add User Modal */}
       {showAddUser && (
         <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4">
           <div className="bg-white rounded-xl shadow-xl max-w-md w-full max-h-[85vh] overflow-y-auto">
             <div className="p-4">
               <div className="flex justify-between items-center mb-3">
                 <h3 className="text-base font-bold text-gray-900">Add New User</h3>
-                <button onClick={() => { setShowAddUser(false); resetForm(); }} className="text-gray-400 hover:text-gray-600">
+                <button
+                  onClick={() => {
+                    setShowAddUser(false);
+                    resetForm();
+                  }}
+                  className="text-gray-400 hover:text-gray-600"
+                >
                   <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12" />
                   </svg>
                 </button>
               </div>
+
               <form onSubmit={handleAddUser}>
                 <div className="space-y-3">
                   <div>
@@ -439,7 +594,7 @@ function AdminDashboard() {
                       type="text"
                       value={userForm.full_name}
                       onChange={(e) => setUserForm({ ...userForm, full_name: e.target.value })}
-                      className="w-full px-3 py-1.5 border border-gray-200 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                      className="w-full px-3 py-1.5 border border-gray-200 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-teal-500 focus:border-transparent"
                       required
                     />
                   </div>
@@ -449,7 +604,7 @@ function AdminDashboard() {
                       type="email"
                       value={userForm.email}
                       onChange={(e) => setUserForm({ ...userForm, email: e.target.value })}
-                      className="w-full px-3 py-1.5 border border-gray-200 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                      className="w-full px-3 py-1.5 border border-gray-200 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-teal-500 focus:border-transparent"
                       required
                     />
                   </div>
@@ -459,7 +614,7 @@ function AdminDashboard() {
                       type="password"
                       value={userForm.password}
                       onChange={(e) => setUserForm({ ...userForm, password: e.target.value })}
-                      className="w-full px-3 py-1.5 border border-gray-200 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                      className="w-full px-3 py-1.5 border border-gray-200 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-teal-500 focus:border-transparent"
                       required
                     />
                   </div>
@@ -467,8 +622,8 @@ function AdminDashboard() {
                     <label className="block text-xs font-semibold text-gray-600 mb-1">Role *</label>
                     <select
                       value={userForm.role}
-                      onChange={(e) => setUserForm({ ...userForm, role: e.target.value })}
-                      className="w-full px-3 py-1.5 border border-gray-200 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                      onChange={(e) => setUserForm({ ...userForm, role: e.target.value, student_ids: [] })}
+                      className="w-full px-3 py-1.5 border border-gray-200 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-teal-500 focus:border-transparent"
                       required
                     >
                       <option value="student">Student</option>
@@ -477,66 +632,24 @@ function AdminDashboard() {
                       <option value="admin">Admin</option>
                     </select>
                   </div>
-                  {userForm.role === 'student' && (
-                    <>
-                      <div>
-                        <label className="block text-xs font-semibold text-gray-600 mb-1">Grade Level *</label>
-                        <input
-                          type="text"
-                          value={userForm.grade_level}
-                          onChange={(e) => setUserForm({ ...userForm, grade_level: e.target.value })}
-                          className="w-full px-3 py-1.5 border border-gray-200 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                          required
-                        />
-                      </div>
-                      <div>
-                        <label className="block text-xs font-semibold text-gray-600 mb-1">Section *</label>
-                        <input
-                          type="text"
-                          value={userForm.section}
-                          onChange={(e) => setUserForm({ ...userForm, section: e.target.value })}
-                          className="w-full px-3 py-1.5 border border-gray-200 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                          required
-                        />
-                      </div>
-                    </>
-                  )}
-                  {userForm.role === 'teacher' && (
-                    <>
-                      <div>
-                        <label className="block text-xs font-semibold text-gray-600 mb-1">Qualification *</label>
-                        <input
-                          type="text"
-                          value={userForm.qualification}
-                          onChange={(e) => setUserForm({ ...userForm, qualification: e.target.value })}
-                          className="w-full px-3 py-1.5 border border-gray-200 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                          required
-                        />
-                      </div>
-                      <div>
-                        <label className="block text-xs font-semibold text-gray-600 mb-1">Subject *</label>
-                        <input
-                          type="text"
-                          value={userForm.subject}
-                          onChange={(e) => setUserForm({ ...userForm, subject: e.target.value })}
-                          className="w-full px-3 py-1.5 border border-gray-200 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                          required
-                        />
-                      </div>
-                    </>
-                  )}
+
+                  <RoleSpecificFields />
                 </div>
+
                 <div className="flex justify-end gap-2 mt-4">
                   <button
                     type="button"
-                    onClick={() => { setShowAddUser(false); resetForm(); }}
+                    onClick={() => {
+                      setShowAddUser(false);
+                      resetForm();
+                    }}
                     className="px-3 py-1.5 border border-gray-200 rounded-md text-sm text-gray-600 hover:bg-gray-50 transition"
                   >
                     Cancel
                   </button>
                   <button
                     type="submit"
-                    className="px-3 py-1.5 bg-[#2563eb] text-white rounded-md text-sm font-medium hover:bg-[#1d4ed8] transition"
+                    className="px-3 py-1.5 bg-teal-500 text-white rounded-md text-sm font-medium hover:bg-teal-600 transition"
                   >
                     Add User
                   </button>
@@ -547,19 +660,26 @@ function AdminDashboard() {
         </div>
       )}
 
-      {/* Edit User Modal */}
       {showEditUser && selectedUser && (
         <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4">
           <div className="bg-white rounded-xl shadow-xl max-w-md w-full max-h-[85vh] overflow-y-auto">
             <div className="p-4">
               <div className="flex justify-between items-center mb-3">
                 <h3 className="text-base font-bold text-gray-900">Edit User</h3>
-                <button onClick={() => { setShowEditUser(false); setSelectedUser(null); resetForm(); }} className="text-gray-400 hover:text-gray-600">
+                <button
+                  onClick={() => {
+                    setShowEditUser(false);
+                    setSelectedUser(null);
+                    resetForm();
+                  }}
+                  className="text-gray-400 hover:text-gray-600"
+                >
                   <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12" />
                   </svg>
                 </button>
               </div>
+
               <form onSubmit={handleEditUser}>
                 <div className="space-y-3">
                   <div>
@@ -568,7 +688,7 @@ function AdminDashboard() {
                       type="text"
                       value={userForm.full_name}
                       onChange={(e) => setUserForm({ ...userForm, full_name: e.target.value })}
-                      className="w-full px-3 py-1.5 border border-gray-200 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                      className="w-full px-3 py-1.5 border border-gray-200 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-teal-500 focus:border-transparent"
                       required
                     />
                   </div>
@@ -578,25 +698,27 @@ function AdminDashboard() {
                       type="email"
                       value={userForm.email}
                       onChange={(e) => setUserForm({ ...userForm, email: e.target.value })}
-                      className="w-full px-3 py-1.5 border border-gray-200 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                      className="w-full px-3 py-1.5 border border-gray-200 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-teal-500 focus:border-transparent"
                       required
                     />
                   </div>
                   <div>
-                    <label className="block text-xs font-semibold text-gray-600 mb-1">Password (blank = keep current)</label>
+                    <label className="block text-xs font-semibold text-gray-600 mb-1">
+                      Password (blank = keep current)
+                    </label>
                     <input
                       type="password"
                       value={userForm.password}
                       onChange={(e) => setUserForm({ ...userForm, password: e.target.value })}
-                      className="w-full px-3 py-1.5 border border-gray-200 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                      className="w-full px-3 py-1.5 border border-gray-200 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-teal-500 focus:border-transparent"
                     />
                   </div>
                   <div>
                     <label className="block text-xs font-semibold text-gray-600 mb-1">Role *</label>
                     <select
                       value={userForm.role}
-                      onChange={(e) => setUserForm({ ...userForm, role: e.target.value })}
-                      className="w-full px-3 py-1.5 border border-gray-200 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                      onChange={(e) => setUserForm({ ...userForm, role: e.target.value, student_ids: [] })}
+                      className="w-full px-3 py-1.5 border border-gray-200 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-teal-500 focus:border-transparent"
                       required
                     >
                       <option value="student">Student</option>
@@ -605,66 +727,25 @@ function AdminDashboard() {
                       <option value="admin">Admin</option>
                     </select>
                   </div>
-                  {userForm.role === 'student' && (
-                    <>
-                      <div>
-                        <label className="block text-xs font-semibold text-gray-600 mb-1">Grade Level *</label>
-                        <input
-                          type="text"
-                          value={userForm.grade_level}
-                          onChange={(e) => setUserForm({ ...userForm, grade_level: e.target.value })}
-                          className="w-full px-3 py-1.5 border border-gray-200 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                          required
-                        />
-                      </div>
-                      <div>
-                        <label className="block text-xs font-semibold text-gray-600 mb-1">Section *</label>
-                        <input
-                          type="text"
-                          value={userForm.section}
-                          onChange={(e) => setUserForm({ ...userForm, section: e.target.value })}
-                          className="w-full px-3 py-1.5 border border-gray-200 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                          required
-                        />
-                      </div>
-                    </>
-                  )}
-                  {userForm.role === 'teacher' && (
-                    <>
-                      <div>
-                        <label className="block text-xs font-semibold text-gray-600 mb-1">Qualification *</label>
-                        <input
-                          type="text"
-                          value={userForm.qualification}
-                          onChange={(e) => setUserForm({ ...userForm, qualification: e.target.value })}
-                          className="w-full px-3 py-1.5 border border-gray-200 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                          required
-                        />
-                      </div>
-                      <div>
-                        <label className="block text-xs font-semibold text-gray-600 mb-1">Subject *</label>
-                        <input
-                          type="text"
-                          value={userForm.subject}
-                          onChange={(e) => setUserForm({ ...userForm, subject: e.target.value })}
-                          className="w-full px-3 py-1.5 border border-gray-200 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                          required
-                        />
-                      </div>
-                    </>
-                  )}
+
+                  <RoleSpecificFields />
                 </div>
+
                 <div className="flex justify-end gap-2 mt-4">
                   <button
                     type="button"
-                    onClick={() => { setShowEditUser(false); setSelectedUser(null); resetForm(); }}
+                    onClick={() => {
+                      setShowEditUser(false);
+                      setSelectedUser(null);
+                      resetForm();
+                    }}
                     className="px-3 py-1.5 border border-gray-200 rounded-md text-sm text-gray-600 hover:bg-gray-50 transition"
                   >
                     Cancel
                   </button>
                   <button
                     type="submit"
-                    className="px-3 py-1.5 bg-[#2563eb] text-white rounded-md text-sm font-medium hover:bg-[#1d4ed8] transition"
+                    className="px-3 py-1.5 bg-teal-500 text-white rounded-md text-sm font-medium hover:bg-teal-600 transition"
                   >
                     Update User
                   </button>
@@ -675,14 +756,18 @@ function AdminDashboard() {
         </div>
       )}
 
-      {/* Delete Confirmation Modal */}
       {showDeleteConfirm && selectedUser && (
         <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4">
           <div className="bg-white rounded-xl shadow-xl max-w-sm w-full">
             <div className="p-4 text-center">
               <div className="mx-auto w-10 h-10 rounded-full bg-red-100 flex items-center justify-center mb-3">
                 <svg className="w-5 h-5 text-red-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    strokeWidth="2"
+                    d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"
+                  />
                 </svg>
               </div>
               <h3 className="text-base font-bold text-gray-900 mb-1">Delete User</h3>
@@ -691,7 +776,10 @@ function AdminDashboard() {
               </p>
               <div className="flex justify-center gap-2">
                 <button
-                  onClick={() => { setShowDeleteConfirm(false); setSelectedUser(null); }}
+                  onClick={() => {
+                    setShowDeleteConfirm(false);
+                    setSelectedUser(null);
+                  }}
                   className="px-4 py-1.5 border border-gray-200 rounded-md text-sm text-gray-600 hover:bg-gray-50 transition"
                 >
                   Cancel

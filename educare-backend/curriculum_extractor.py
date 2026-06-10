@@ -1,10 +1,16 @@
 """
 Part 2: Curriculum Content Extractor
-Extracts explanations, examples, and formulas from FAISS search result chunks.
-Improves content quality by filtering out metadata and focusing on math content.
-Now supports all 6 curriculum textbooks with book-type detection.
+Extracts explanations, examples, formulas, and step-by-step notes from FAISS chunks.
 """
 import re
+
+from math_format import (
+    clean_pdf_text,
+    format_math_for_display,
+    is_complete_sentence,
+    is_valid_formula_line,
+    truncate_at_sentence,
+)
 
 METADATA_PATTERNS = [
     r'\bAuthors?\s*:',
@@ -25,13 +31,11 @@ MATH_TERMS = [
     'constant', 'coefficient', 'expression', 'graph', 'axis', 'slope',
     'tangent', 'curve', 'domain', 'range', 'continuous', 'discrete',
     'matrix', 'vector', 'determinant', 'sequence', 'series', 'factor',
-    'simplify', 'evaluate', 'substitute', 'proof', 'theorem', 'lemma'
+    'simplify', 'evaluate', 'substitute', 'proof', 'theorem', 'lemma',
 ]
 
 EXCLUDE_PAGES = list(range(1, 10))
 
-# ── Source-Name Mapping ────────────────────────────────────────────────────────
-# Maps every known PDF filename → human-readable book name + grade band
 BOOK_INFO = {
     'extreme mathematics grade 9&10.pdf':          ('Extreme Mathematics: Grade 9 & 10',  '9_10', 'extreme'),
     'extreme mathematics grade 11&12.pdf':         ('Extreme Mathematics: Grade 11 & 12', '11_12', 'extreme'),
@@ -39,27 +43,38 @@ BOOK_INFO = {
     'grade10_math.pdf':                             ('Ethiopian Grade 10 Mathematics Textbook', '10', 'grade'),
     'grade11_math.pdf':                             ('Ethiopian Grade 11 Mathematics Textbook', '11', 'grade'),
     'grade12_math.pdf':                             ('Ethiopian Grade 12 Mathematics Textbook', '12', 'grade'),
+    'grade-9-mathematics-textbook.pdf':           ('Ethiopian Grade 9 Mathematics Textbook',  '9',  'grade'),
+    'grade-10-mathematics-textbook.pdf':          ('Ethiopian Grade 10 Mathematics Textbook', '10', 'grade'),
+    'grade-11-mathematics-textbook.pdf':          ('Ethiopian Grade 11 Mathematics Textbook', '11', 'grade'),
+    'grade-12-mathematics-textbook.pdf':          ('Ethiopian Grade 12 Mathematics Textbook', '12', 'grade'),
 }
+
+METHOD_PATTERNS = [
+    r'factorization\s+method',
+    r'completing\s+the\s+square',
+    r'quadratic\s+formula',
+    r'power\s+rule',
+    r'substitution\s+method',
+    r'integration\s+by\s+parts',
+    r'direct\s+substitution',
+    r'product\s+rule',
+    r'chain\s+rule',
+]
 
 
 def _get_book_info(source: str):
-    """Return (book_name, grade_band, book_type) for a given source filename."""
     key = source.lower().strip()
     if key in BOOK_INFO:
         return BOOK_INFO[key]
-    # Try partial match for filenames with path prefixes
     for k, v in BOOK_INFO.items():
         if k in key or key in k:
             return v
-    # Return generic
     return (source.replace('.pdf', '').replace('_', ' ').title(), 'unknown', 'unknown')
 
 
 def _is_metadata_chunk(text: str, page: int) -> bool:
-    """Check if chunk contains metadata or front matter."""
     if page in EXCLUDE_PAGES:
         return True
-    text_lower = text.lower()
     for pattern in METADATA_PATTERNS:
         if re.search(pattern, text, re.IGNORECASE):
             return True
@@ -67,7 +82,6 @@ def _is_metadata_chunk(text: str, page: int) -> bool:
 
 
 def _contains_math_content(text: str) -> bool:
-    """Check if text contains mathematical content."""
     text_lower = text.lower()
     math_term_count = sum(1 for term in MATH_TERMS if term in text_lower)
     has_math_symbols = bool(re.search(r'[=+\-*/^√∫∏∑∞≤≥]', text))
@@ -76,7 +90,6 @@ def _contains_math_content(text: str) -> bool:
 
 
 def _is_likely_prose(text: str) -> bool:
-    """Check if text is mostly narrative prose (skip it)."""
     lines = [l.strip() for l in text.split('\n') if l.strip()]
     if not lines:
         return False
@@ -89,52 +102,181 @@ def _is_likely_prose(text: str) -> bool:
     return name_count > 2
 
 
+def _score_chunk(text: str, topic_hint: str = '') -> int:
+    """Higher = better study-note source."""
+    t = clean_pdf_text(text)
+    if not t:
+        return 0
+    score = 0
+    tl = t.lower()
+    if topic_hint:
+        for token in re.findall(r'[a-z]{4,}', topic_hint.lower()):
+            if token in tl:
+                score += 15
+    if re.search(r'\b(definition|theorem|note|method|formula)\b', tl):
+        score += 20
+    if re.search(r'\b(example|solution|solve|evaluate)\b', tl):
+        score += 12
+    if re.search(r'unit\s+\d+\s*:', t, re.IGNORECASE):
+        score += 8
+    if _contains_math_content(t):
+        score += 10
+    if _is_likely_prose(t):
+        score -= 25
+    if re.search(r'\b(activity|exercise|group\s+work)\b', tl):
+        score -= 8
+    # Penalize very fragmented PDF lines
+    short_lines = sum(1 for ln in t.split('\n') if 0 < len(ln.strip()) < 12)
+    if short_lines > 8:
+        score -= 15
+    return score
+
+
+def _extract_unit_section(text: str) -> str:
+    m = re.search(r'Unit\s+\d+\s*:\s*[^\n]+', text, re.IGNORECASE)
+    return m.group(0).strip() if m else ''
+
+
 def _extract_worked_examples(text: str) -> list:
-    """Find worked example patterns like 'Example 1:', 'Solve:', 'Example 3' blocks."""
     examples = []
     lines = text.split('\n')
     i = 0
     while i < len(lines):
         line = lines[i].strip()
-        # Matches: "Example 1:", "Example 3", "Example", "Worked Example"
-        if re.search(r'\b(Example|Worked Example|Solved Example|Sample)\b', line, re.IGNORECASE):
+        if re.search(r'\b(Example|Worked Example|Solved Example)\s*\d+', line, re.IGNORECASE):
             example_lines = [line]
             j = i + 1
-            while j < len(lines) and len(lines[j].strip()) > 0:
-                example_lines.append(lines[j].strip())
-                j += 1
-                if len(example_lines) >= 8:
+            while j < len(lines):
+                nxt = lines[j].strip()
+                if not nxt:
+                    if len(example_lines) >= 3:
+                        break
+                    j += 1
+                    continue
+                if re.match(r'^(Example|Exercise|Activity)\s*\d', nxt, re.IGNORECASE) and j > i + 2:
                     break
-            full = ' '.join(example_lines)
-            if len(full) > 40:
-                examples.append(full[:500])
+                example_lines.append(nxt)
+                j += 1
+                if len(example_lines) >= 14:
+                    break
+            full = format_math_for_display(' '.join(example_lines))
+            full = truncate_at_sentence(full, 700)
+            if len(full) > 50 and is_complete_sentence(full):
+                if re.search(r'\bSolution\b', full, re.IGNORECASE) or re.search(
+                    r'=\s*[-+]?\d', full
+                ):
+                    examples.append(full)
             i = j
             continue
         i += 1
     return examples
 
 
-def _extract_explanation(text: str) -> str:
-    """Return first 2-3 meaningful sentences containing math content."""
-    if not text:
+def _extract_solution_steps(text: str) -> list:
+    """Pull numbered steps from Solution / Step blocks."""
+    steps = []
+    t = clean_pdf_text(text)
+    for m in re.finditer(
+        r'(?:Step\s*(\d+)[.:]\s*|^(\d+)[.)]\s+)([^\n]+(?:\n(?!\d+[.)]|\s*Step)[^\n]+)*)',
+        t,
+        re.IGNORECASE | re.MULTILINE,
+    ):
+        body = format_math_for_display(m.group(3).strip())
+        body = truncate_at_sentence(body, 320)
+        if len(body) > 25:
+            steps.append(body)
+    sol = re.search(
+        r'\bSolution\b\s*[:\n]?\s*(.+?)(?=\n\s*(?:Example|Exercise|Activity|Unit\s+\d)|\Z)',
+        t,
+        re.IGNORECASE | re.DOTALL,
+    )
+    if sol:
+        block = format_math_for_display(sol.group(1).strip())
+        sentences = re.split(r'(?<=[.!?])\s+', block)
+        for s in sentences:
+            s = s.strip()
+            if len(s) > 30 and _contains_math_content(s):
+                steps.append(truncate_at_sentence(s, 280))
+                if len(steps) >= 5:
+                    break
+    return steps[:6]
+
+
+def _extract_explanation(chunks: list, topic_hint: str = '') -> str:
+    """Build a complete overview from the best chunk(s), not a mid-sentence fragment."""
+    if not chunks:
         return ''
-    sentences = re.split(r'(?<=[.!?])\s+', text.strip())
-    good = []
-    for s in sentences:
-        s = s.strip()
-        if len(s) < 30:
+
+    ranked = sorted(
+        chunks,
+        key=lambda c: _score_chunk(c.get('text', ''), topic_hint),
+        reverse=True,
+    )
+
+    paragraphs = []
+    seen = set()
+    section_added = False
+
+    for chunk in ranked[:4]:
+        text = clean_pdf_text(chunk.get('text', ''))
+        if not text:
             continue
-        if _is_likely_prose(s):
+
+        section = _extract_unit_section(text)
+        if section and not section_added:
+            seen.add(section.lower())
+            paragraphs.append(section)
+            section_added = True
+
+        sentences = re.split(r'(?<=[.!?])\s+', text)
+        good = []
+        for s in sentences:
+            s = s.strip()
+            if len(s) < 35 or len(s) > 400:
+                continue
+            if _is_likely_prose(s):
+                continue
+            sl = s.lower()
+            if '?' in s or re.search(r'^\s*how to solve\b', sl):
+                continue
+            if section and section.lower() in sl and len(s) < 150:
+                continue
+            if s.lower().count('unit ') > 1:
+                continue
+            if re.search(r'\b(definition|method|formula|means|given by|is defined)\b', sl):
+                good.insert(0, s)
+            elif _contains_math_content(s):
+                good.append(s)
+        for s in good[:2]:
+            key = s[:80].lower()
+            if key not in seen:
+                seen.add(key)
+                paragraphs.append(s)
+
+        if len(paragraphs) >= 4:
+            break
+
+    if not paragraphs:
+        text = clean_pdf_text(ranked[0].get('text', ''))
+        sentences = [s.strip() for s in re.split(r'(?<=[.!?])\s+', text) if len(s.strip()) > 40]
+        paragraphs = sentences[:3]
+
+    # Deduplicate overlapping unit headers / repeated phrases
+    deduped = []
+    seen_norm = set()
+    for p in paragraphs[:6]:
+        norm = re.sub(r'\s+', ' ', p.lower())[:120]
+        if norm in seen_norm:
             continue
-        if _contains_math_content(s) or len(s) > 50:
-            good.append(s)
-    if len(good) < 2:
-        good = [s.strip() for s in sentences if len(s.strip()) > 40][:3]
-    return ' '.join(good[:3])
+        seen_norm.add(norm)
+        deduped.append(p)
+
+    overview = ' '.join(deduped[:4])
+    overview = format_math_for_display(overview)
+    return truncate_at_sentence(overview, 900)
 
 
 def _extract_examples(text: str) -> list:
-    """Find lines that look like examples (contain 'Example', numbers, or equations)."""
     examples = []
     lines = text.split('\n')
     i = 0
@@ -146,105 +288,143 @@ def _extract_examples(text: str) -> list:
             while j < len(lines) and len(lines[j].strip()) > 0:
                 example_lines.append(lines[j].strip())
                 j += 1
-                if len(example_lines) >= 5:
+                if len(example_lines) >= 6:
                     break
-            full_example = ' '.join(example_lines)
-            if len(full_example) > 30:
-                examples.append(full_example[:300])
+            full = format_math_for_display(' '.join(example_lines))
+            full = truncate_at_sentence(full, 400)
+            if len(full) > 35:
+                examples.append(full)
             i = j
             continue
-        if re.search(r'\d+\s*[=+\-*/^]\s*\d+', line) or re.search(r'(Solve|Evaluate|Find|Calculate)', line, re.IGNORECASE):
-            if len(line) > 20:
-                examples.append(line[:250])
+        if re.search(r'\b(Solve|Evaluate|Find|Calculate)\b', line, re.IGNORECASE) and '=' in line:
+            ex = format_math_for_display(line)
+            if len(ex) > 25:
+                examples.append(truncate_at_sentence(ex, 300))
         i += 1
     return examples[:4]
 
 
 def _extract_formulas(text: str) -> list:
-    """Find lines that look like formulas (contain = and math symbols)."""
     formulas = []
-    lines = text.split('\n')
-    for line in lines:
-        line = line.strip()
-        if not line or len(line) < 5:
-            continue
-        has_equals = '=' in line
-        has_math_vars = bool(re.search(r'[a-zA-Z]{2,}', line))
-        has_operators = bool(re.search(r'[+\-*/^∫∏∑]', line))
-        if has_equals and (has_math_vars or has_operators):
-            if len(line) < 180 and line.count(' ') < 25:
-                clean_line = line
-                if len(clean_line) > 150:
-                    clean_line = clean_line[:150] + '...'
-                formulas.append(clean_line)
-    return formulas[:5]
+    for line in text.split('\n'):
+        line = format_math_for_display(line.strip())
+        if is_valid_formula_line(line):
+            formulas.append(line)
+    return formulas
 
 
-def extract_content(chunks: list) -> dict:
+def _build_step_by_step(topic_hint: str, chunks: list, explanation: str,
+                        formulas: list, worked_examples: list) -> list:
+    """Structured learning steps for study notes."""
+    steps = []
+    topic = (topic_hint or 'this topic').strip()
+
+    if explanation:
+        first = re.split(r'(?<=[.!?])\s+', explanation)[0]
+        steps.append(
+            f'Start with the overview above, then apply these steps for {topic}: '
+            f'{truncate_at_sentence(first, 180)}'
+        )
+
+    # Method steps from chunk text
+    combined = ' '.join(clean_pdf_text(c.get('text', '')) for c in chunks[:3])
+    methods_found = []
+    for pat in METHOD_PATTERNS:
+        m = re.search(pat, combined, re.IGNORECASE)
+        if m:
+            methods_found.append(m.group(0))
+    if methods_found:
+        steps.append(
+            f'Use these standard methods for {topic}: {", ".join(dict.fromkeys(methods_found))}.'
+        )
+    elif re.search(r'\b(solve|factor|integrate|differentiate|evaluate)\b', combined, re.IGNORECASE):
+        steps.append(f'Identify what the problem asks, then apply the rules for {topic} step by step.')
+
+    if formulas:
+        key = formulas[0]
+        steps.append(f'Key formula to remember: {key}')
+        if len(formulas) > 1:
+            steps.append(f'Also useful: {formulas[1]}')
+
+    if worked_examples:
+        ex = worked_examples[0]
+        inner_steps = _extract_solution_steps(ex)
+        if inner_steps:
+            for s in inner_steps[:3]:
+                steps.append(s)
+        elif re.search(r'\bExample\s*\d', ex, re.IGNORECASE):
+            steps.append(f'Follow this worked example from your textbook: {truncate_at_sentence(ex, 400)}')
+    elif explanation:
+        steps.append('Practice with similar problems and check each step before moving on.')
+
+    steps.append('Verify your final answer by substituting back or using a quick estimate.')
+
+    # Deduplicate while preserving order
+    seen = set()
+    unique = []
+    for s in steps:
+        key = s[:60].lower()
+        if key not in seen and len(s.strip()) > 20:
+            seen.add(key)
+            unique.append(truncate_at_sentence(s, 450))
+    return unique[:6]
+
+
+def extract_content(chunks: list, topic_hint: str = '') -> dict:
     """
-    Takes a list of FAISS result chunks (each with 'text', 'source', 'page')
-    and extracts structured content with improved filtering. Supports ALL 6 textbooks.
-
-    Returns:
-        {
-          'explanation': str,
-          'examples': list[str],
-          'formulas': list[str],
-          'source_citation': str,
-          'book_type': str,         # 'extreme' | 'grade' | 'unknown'
-          'book_name': str,         # Human-readable book name
-          'grade_band': str,
-          'source_file': str,
-          'source_page': int|str,
-          'source_grade': int|None,
-          'worked_examples': list[str],
-          'all_sources': list[str],  # all source filenames used
-        }
+    Takes FAISS chunks and returns structured study-note content.
+    topic_hint: optional topic name to rank relevant chunks (e.g. from material title).
     """
+    empty = {
+        'explanation': '', 'examples': [], 'formulas': [],
+        'source_citation': '', 'book_type': 'unknown',
+        'book_name': '', 'grade_band': 'unknown',
+        'source_file': '', 'source_page': '', 'source_grade': None,
+        'worked_examples': [], 'all_sources': [], 'steps': [],
+    }
     if not chunks:
-        return {
-            'explanation': '', 'examples': [], 'formulas': [],
-            'source_citation': '', 'book_type': 'unknown',
-            'book_name': '', 'grade_band': 'unknown',
-            'source_file': '', 'source_page': '', 'source_grade': None,
-            'worked_examples': [], 'all_sources': [],
-        }
+        return empty
 
     filtered_chunks = []
-    seen_pages = set()
     all_sources = []
 
     for chunk in chunks:
         text = chunk.get('text', '')
         page = chunk.get('page', 0)
         source = chunk.get('source', 'curriculum')
-
         if _is_metadata_chunk(text, page):
             continue
         if _is_likely_prose(text):
             continue
         if not _contains_math_content(text):
             continue
-
         filtered_chunks.append(chunk)
         if source not in all_sources:
             all_sources.append(source)
 
     if not filtered_chunks:
-        filtered_chunks = chunks
+        filtered_chunks = sorted(
+            chunks,
+            key=lambda c: _score_chunk(c.get('text', ''), topic_hint),
+            reverse=True,
+        )[:3]
+    else:
+        filtered_chunks = sorted(
+            filtered_chunks,
+            key=lambda c: _score_chunk(c.get('text', ''), topic_hint),
+            reverse=True,
+        )
 
-    # Detect book from first chunk
     first_source = filtered_chunks[0].get('source', 'curriculum')
     book_name, grade_band, book_type = _get_book_info(first_source)
 
-    # Detect book type across ALL sources
     all_types = set()
     for c in filtered_chunks:
         _, _, bt = _get_book_info(c.get('source', 'curriculum'))
         all_types.add(bt)
     dominant_type = 'extreme' if 'extreme' in all_types else book_type
 
-    explanation = _extract_explanation(filtered_chunks[0].get('text', ''))
+    explanation = _extract_explanation(filtered_chunks, topic_hint)
     examples = []
     formulas = []
     worked_examples = []
@@ -255,7 +435,6 @@ def extract_content(chunks: list) -> dict:
         formulas.extend(_extract_formulas(text))
         worked_examples.extend(_extract_worked_examples(text))
 
-    # Deduplicate
     seen = set()
     unique_examples = []
     for e in examples:
@@ -277,22 +456,22 @@ def extract_content(chunks: list) -> dict:
             seen.add(we)
             unique_worked.append(we)
 
-    first = filtered_chunks[0] if filtered_chunks else chunks[0]
+    steps = _build_step_by_step(
+        topic_hint, filtered_chunks, explanation,
+        unique_formulas[:5], unique_worked[:3],
+    )
+
+    first = filtered_chunks[0]
     source = first.get('source', 'curriculum')
     page = first.get('page', '')
-    # Build readable citation: book name + page + section
     bn, gb, bt = _get_book_info(source)
     section = ''
     for c in filtered_chunks:
-        import re as _re
-        m = _re.search(r'Unit\s+\d+\s*:\s*[^\n]+', c.get('text', ''), _re.IGNORECASE)
+        m = re.search(r'Unit\s+\d+\s*:\s*[^\n]+', c.get('text', ''), re.IGNORECASE)
         if m:
             section = m.group(0).strip()
             break
-    if page:
-        citation = f'{bn}, page {page}'
-    else:
-        citation = bn
+    citation = f'{bn}, page {page}' if page else bn
     if section:
         citation = f'{citation} — {section}'
 
@@ -307,6 +486,7 @@ def extract_content(chunks: list) -> dict:
         'examples': unique_examples[:4],
         'formulas': unique_formulas[:5],
         'worked_examples': unique_worked[:3],
+        'steps': steps,
         'source_citation': citation,
         'book_type': dominant_type,
         'book_name': bn,

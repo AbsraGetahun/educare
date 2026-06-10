@@ -21,6 +21,12 @@ function TeacherLogin() {
       localStorage.setItem('user_id', data.user_id);
       localStorage.setItem('full_name', data.full_name);
       localStorage.setItem('role', data.role);
+      const assignedGrade = data.assigned_grade ?? data.grade_level;
+      if (assignedGrade != null && assignedGrade !== '') {
+        localStorage.setItem('assigned_grade', String(assignedGrade));
+      } else {
+        localStorage.removeItem('assigned_grade');
+      }
       
       if (data.role === 'teacher') {
         navigate('/teacher/dashboard');

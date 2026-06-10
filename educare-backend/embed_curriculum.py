@@ -19,26 +19,57 @@ METADATA_PATTERNS = [
 
 EXCLUDE_PAGES = list(range(1, 10))
 
-GRADE_FILENAME_MAP = {
-    'grade9': 9,
-    'grade10': 10,
-    'grade11': 11,
-    'grade12': 12,
+# Map alternate filenames → canonical source keys stored in FAISS metadata
+CANONICAL_SOURCE_NAMES = {
+    'grade-9-mathematics-textbook.pdf': 'grade9_math.pdf',
+    'grade-10-mathematics-textbook.pdf': 'grade10_math.pdf',
+    'grade-11-mathematics-textbook.pdf': 'grade11_math.pdf',
+    'grade-12-mathematics-textbook.pdf': 'grade12_math.pdf',
+    'extreme mathematics grade 9&10.pdf': 'Extreme Mathematics Grade 9&10.pdf',
+    'extreme mathematics grade 11&12.pdf': 'Extreme Mathematics Grade 11&12.pdf',
 }
+
+EXPECTED_PDFS = [
+    'Extreme Mathematics Grade 9&10.pdf',
+    'Extreme Mathematics Grade 11&12.pdf',
+    'grade9_math.pdf',
+    'grade10_math.pdf',
+    'grade11_math.pdf',
+    'grade12_math.pdf',
+    # Alternate names (auto-canonicalized on index):
+    'grade-9-mathematics-textbook.pdf',
+    'grade-10-mathematics-textbook.pdf',
+    'grade-11-mathematics-textbook.pdf',
+    'grade-12-mathematics-textbook.pdf',
+]
+
+
+def _canonical_source_name(filename: str) -> str:
+    key = filename.lower().strip()
+    return CANONICAL_SOURCE_NAMES.get(key, filename)
 
 
 def _parse_grades_from_filename(filename: str):
     """Return list of grade levels this PDF applies to."""
     lower = filename.lower()
+    canonical = _canonical_source_name(filename).lower()
+    if 'grade9_math' in canonical:
+        return [9]
+    if 'grade10_math' in canonical:
+        return [10]
+    if 'grade11_math' in canonical:
+        return [11]
+    if 'grade12_math' in canonical:
+        return [12]
     if '9&10' in lower or '9 and 10' in lower:
         return [9, 10]
     if '11&12' in lower or '11 and 12' in lower:
         return [11, 12]
-    name = lower.replace(' ', '').replace('_', '')
-    for key, grade in GRADE_FILENAME_MAP.items():
-        if key in name:
+    compact = lower.replace(' ', '').replace('_', '').replace('-', '')
+    for key, grade in [('grade12', 12), ('grade11', 11), ('grade10', 10), ('grade9', 9)]:
+        if key in compact:
             return [grade]
-    m = re.search(r'grade\s*(\d+)', lower)
+    m = re.search(r'grade[-\s]*(\d+)', lower)
     if m:
         return [int(m.group(1))]
     return []
@@ -125,8 +156,9 @@ for pdf_file in pdf_files:
             if len(chunk.strip()) > MIN_CHUNK_LENGTH:
                 chunks.append(chunk)
                 grades = _parse_grades_from_filename(pdf_file)
+                canonical = _canonical_source_name(pdf_file)
                 metadata.append({
-                    "source": pdf_file,
+                    "source": canonical,
                     "page": page_num,
                     "chunk_index": len(chunks),
                     "text": chunk[:2500],
@@ -136,7 +168,8 @@ for pdf_file in pdf_files:
         page_count += 1
     
     doc.close()
-    print(f"  Extracted {len([m for m in metadata if m['source'] == pdf_file])} chunks from {page_count} pages")
+    canonical = _canonical_source_name(pdf_file)
+    print(f"  Extracted {len([m for m in metadata if m['source'] == canonical])} chunks from {page_count} pages")
 
 print(f"\nTotal chunks: {len(chunks)}")
 
@@ -183,5 +216,5 @@ with open(chunks_path, 'w', encoding='utf-8') as f:
     json.dump(chunks_with_meta, f, indent=2)
 print(f"Chunks saved to {chunks_path}")
 
-print("\n✅ Curriculum embedding complete!")
+print("\n Curriculum embedding complete!")
 print(f"Processed {len(chunks)} chunks from {len(pdf_files)} PDF files.")

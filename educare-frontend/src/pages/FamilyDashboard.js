@@ -57,7 +57,7 @@ function FamilyDashboard() {
 
   const handleLogout = () => {
     localStorage.clear();
-    navigate('/family/login');
+    navigate('/');
   };
 
   const handleStudentChange = (e) => {
@@ -69,18 +69,22 @@ function FamilyDashboard() {
   const handleDownloadReport = async () => {
     if (!selectedStudent) return;
     setDownloadingReport(true);
+    setError('');
     try {
       const blob = await getStudentReport(selectedStudent.student_id);
-      const url = window.URL.createObjectURL(blob);
+      const url = window.URL.createObjectURL(
+        new Blob([blob], { type: 'text/html;charset=utf-8' })
+      );
+      const safeName = (selectedStudent.full_name || 'Student').replace(/[^\w\s-]/g, '').trim();
       const link = document.createElement('a');
       link.href = url;
-      link.download = `${selectedStudent.full_name}_Report.pdf`;
+      link.download = `${safeName}_Progress_Report.html`;
       document.body.appendChild(link);
       link.click();
       document.body.removeChild(link);
       window.URL.revokeObjectURL(url);
     } catch (err) {
-      setError('Failed to download report');
+      setError(err.message || 'Failed to download report');
       console.error(err);
     } finally {
       setDownloadingReport(false);
@@ -89,20 +93,20 @@ function FamilyDashboard() {
 
   const getWeaknessColor = (level) => {
     if (level === 'High') return 'bg-red-100 text-red-800';
-    if (level === 'Moderate') return 'bg-yellow-100 text-yellow-800';
-    return 'bg-green-100 text-green-800';
+    if (level === 'Moderate') return 'bg-amber-100 text-amber-800';
+    return 'bg-teal-100 text-teal-800';
   };
 
   const getWeaknessBadgeColor = (level) => {
     if (level === 'High') return 'bg-red-500';
-    if (level === 'Moderate') return 'bg-yellow-500';
-    return 'bg-green-500';
+    if (level === 'Moderate') return 'bg-amber-500';
+    return 'bg-teal-500';
   };
 
   // Prepare chart data sorted by date
   const sortedProgress = [...progress].sort((a, b) => new Date(a.completed_at) - new Date(b.completed_at));
   const chartData = sortedProgress.map((attempt, index) => {
-    const pct = Math.round((attempt.score / attempt.total_marks) * 100);
+    const pct = Math.min(100, Math.round((attempt.score / attempt.total_marks) * 100));
     const date = new Date(attempt.completed_at);
     return {
       name: attempt.quiz_title || `Quiz ${index + 1}`,
@@ -129,7 +133,7 @@ function FamilyDashboard() {
           <div className="mt-1 pt-1 border-t">
             <p className="text-sm">
               Score: <span className="font-bold">{data.score}/{data.total}</span>
-              <span className={`ml-2 font-bold ${data.percentage >= 70 ? 'text-green-600' : data.percentage >= 40 ? 'text-yellow-600' : 'text-red-600'}`}>
+              <span className={`ml-2 font-bold ${data.percentage >= 70 ? 'text-teal-600' : data.percentage >= 40 ? 'text-amber-600' : 'text-red-600'}`}>
                 ({data.percentage}%)
               </span>
             </p>
@@ -151,12 +155,12 @@ function FamilyDashboard() {
   }
 
   return (
-    <div className="min-h-screen bg-gray-100">
+    <div className="min-h-screen bg-[#F3F4F6]">
       {/* Navigation Bar */}
       <nav className="bg-white shadow-md p-4 sticky top-0 z-10">
         <div className="container mx-auto flex justify-between items-center">
           <div className="flex items-center gap-4">
-            <h1 className="text-xl font-bold text-blue-600">EDUCARE</h1>
+            <h1 className="text-xl font-bold text-teal-600">EDUCARE</h1>
             <span className="text-gray-400">|</span>
             <span className="text-gray-600">Family Portal</span>
           </div>
@@ -189,7 +193,7 @@ function FamilyDashboard() {
             <select
               value={selectedStudent?.student_id || ''}
               onChange={handleStudentChange}
-              className="w-full md:w-64 px-3 py-2 border border-gray-300 rounded focus:outline-none focus:ring-2 focus:ring-blue-500"
+              className="w-full md:w-64 px-3 py-2 border border-gray-300 rounded focus:outline-none focus:ring-2 focus:ring-teal-500"
             >
               {students.map((student) => (
                 <option key={student.student_id} value={student.student_id}>
@@ -205,11 +209,11 @@ function FamilyDashboard() {
             {/* Student Info Card */}
             <div className="bg-white rounded-lg shadow-md p-6 mb-6">
               <div className="flex flex-wrap justify-between items-start mb-4 gap-4">
-                <h2 className="text-2xl font-bold">Student Information</h2>
+                <h2 className="text-2xl font-bold text-gray-900">Student Information</h2>
                 <button
                   onClick={handleDownloadReport}
                   disabled={downloadingReport}
-                  className="bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 transition flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
+                  className="bg-teal-500 text-white px-4 py-2 rounded-lg hover:bg-teal-600 transition flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
                 >
                   <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
                     <path strokeLinecap="round" strokeLinejoin="round" d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
@@ -220,15 +224,15 @@ function FamilyDashboard() {
               <div className="grid md:grid-cols-3 gap-4">
                 <div>
                   <div className="text-sm text-gray-500">Name</div>
-                  <div className="text-lg font-semibold">{selectedStudent.full_name}</div>
+                  <div className="text-lg font-semibold text-gray-900">{selectedStudent.full_name}</div>
                 </div>
                 <div>
                   <div className="text-sm text-gray-500">Grade</div>
-                  <div className="text-lg font-semibold">{selectedStudent.grade_level}</div>
+                  <div className="text-lg font-semibold text-gray-900">{selectedStudent.grade_level}</div>
                 </div>
                 <div>
                   <div className="text-sm text-gray-500">Section</div>
-                  <div className="text-lg font-semibold">{selectedStudent.section}</div>
+                  <div className="text-lg font-semibold text-gray-900">{selectedStudent.section}</div>
                 </div>
               </div>
             </div>
@@ -237,11 +241,11 @@ function FamilyDashboard() {
             <div className="bg-white rounded-lg shadow-md p-6 mb-6">
               <div className="flex flex-wrap justify-between items-center mb-4 gap-2">
                 <div>
-                  <h2 className="text-2xl font-bold">Performance Trend</h2>
+                  <h2 className="text-2xl font-bold text-gray-900">Performance Trend</h2>
                   {chartData.length > 0 && (
                     <p className="text-sm text-gray-500 mt-1">
                       {chartData.length} quiz{chartData.length !== 1 ? 'es' : ''} taken
-                      {avgScore > 0 && <span> - Average: <span className={`font-semibold ${avgScore >= 70 ? 'text-green-600' : avgScore >= 40 ? 'text-yellow-600' : 'text-red-600'}`}>{avgScore}%</span></span>}
+                      {avgScore > 0 && <span> - Average: <span className={`font-semibold ${avgScore >= 70 ? 'text-teal-600' : avgScore >= 40 ? 'text-amber-600' : 'text-red-600'}`}>{avgScore}%</span></span>}
                     </p>
                   )}
                 </div>
@@ -250,7 +254,7 @@ function FamilyDashboard() {
                     onClick={() => setChartType('line')}
                     className={`px-4 py-1.5 rounded-md text-sm font-medium transition ${
                       chartType === 'line'
-                        ? 'bg-white shadow text-blue-600'
+                        ? 'bg-white shadow text-teal-600'
                         : 'text-gray-500 hover:text-gray-700'
                     }`}
                   >
@@ -260,7 +264,7 @@ function FamilyDashboard() {
                     onClick={() => setChartType('bar')}
                     className={`px-4 py-1.5 rounded-md text-sm font-medium transition ${
                       chartType === 'bar'
-                        ? 'bg-white shadow text-blue-600'
+                        ? 'bg-white shadow text-teal-600'
                         : 'text-gray-500 hover:text-gray-700'
                     }`}
                   >
@@ -297,11 +301,11 @@ function FamilyDashboard() {
                         <Line
                           type="monotone"
                           dataKey="percentage"
-                          stroke="#3B82F6"
+                          stroke="#36B8F9"
                           strokeWidth={2}
                           name="Score %"
-                          dot={{ fill: '#3B82F6', strokeWidth: 2, r: 4 }}
-                          activeDot={{ r: 6, fill: '#2563eb' }}
+                          dot={{ fill: '#36B8F9', strokeWidth: 2, r: 4 }}
+                          activeDot={{ r: 6, fill: '#2B8FCC' }}
                         />
                       </LineChart>
                     ) : (
@@ -330,7 +334,7 @@ function FamilyDashboard() {
                         <Bar
                           dataKey="percentage"
                           name="Score %"
-                          fill="#3B82F6"
+                          fill="#36B8F9"
                           radius={[4, 4, 0, 0]}
                         />
                       </BarChart>
@@ -347,7 +351,7 @@ function FamilyDashboard() {
 
             {/* Skill Gaps */}
             <div className="bg-white rounded-lg shadow-md p-6 mb-6">
-              <h2 className="text-2xl font-bold mb-4">Skill Gaps</h2>
+              <h2 className="text-2xl font-bold text-gray-900 mb-4">Skill Gaps</h2>
               {gaps.length > 0 ? (
                 <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-4">
                   {gaps.map((gap) => (
@@ -382,7 +386,7 @@ function FamilyDashboard() {
 
             {/* Recommended Practice */}
             <div className="bg-white rounded-lg shadow-md p-6">
-              <h2 className="text-2xl font-bold mb-4">Recommended Practice</h2>
+              <h2 className="text-2xl font-bold text-gray-900 mb-4">Recommended Practice</h2>
               {recommendations.length > 0 ? (
                 <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-4">
                   {recommendations.map((rec, index) => (
@@ -401,7 +405,7 @@ function FamilyDashboard() {
                           <span>Current Avg:</span>
                           <span className={`font-medium ${
                             rec.avg_score < 40 ? 'text-red-600' : 
-                            rec.avg_score < 70 ? 'text-yellow-600' : 'text-green-600'
+                            rec.avg_score < 70 ? 'text-amber-600' : 'text-teal-600'
                           }`}>
                             {rec.avg_score}%
                           </span>

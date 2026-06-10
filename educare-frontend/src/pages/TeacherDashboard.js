@@ -1,6 +1,9 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { getQuizzes, getStudents, getStudentGaps, getQuizResults, createQuiz, updateQuiz, deleteQuiz, getPendingMaterials, approveMaterial, rejectMaterial, getTeacherMasteryOverview, getHeatmap, searchCurriculum, generatePracticeMaterial, generateMaterialByTopic, searchCurriculumByTopic, generateAIQuiz, getMaterialsAnalytics, getCurriculumTopics, generateBatchMaterials } from '../services/api';
+import { getQuizzes, getStudents, getStudentGaps, getQuizResults, getQuizById, createQuiz, updateQuiz, deleteQuiz, getPendingMaterials, approveMaterial, rejectMaterial, getTeacherMasteryOverview, getHeatmap, searchCurriculum, generatePracticeMaterial, generateMaterialByTopic, searchCurriculumByTopic, generateAIQuiz, getMaterialsAnalytics, getCurriculumTopics, generateBatchMaterials } from '../services/api';
+import FilePicker from '../components/FilePicker';
+import MathContent from '../components/MathContent';
+import { resolveUploadUrl } from '../utils/uploadUrl';
 import { OverviewTab, MasteryTab, CurriculumTab, HeatmapTab, StudentsTab, QuizzesTab, ApprovalsTab } from '../components/TeacherTabPanels';
 
 function TeacherDashboard() {
@@ -22,8 +25,6 @@ function TeacherDashboard() {
   const [totalStudents, setTotalStudents] = useState(0);
   const [expandedTopic, setExpandedTopic] = useState(null);
   const [heatmapData, setHeatmapData] = useState([]);
-  const [heatmapGradeFilter, setHeatmapGradeFilter] = useState('all');
-  const [heatmapSort, setHeatmapSort] = useState('mastery');
   const [selectedHeatmapTopic, setSelectedHeatmapTopic] = useState(null);
   const [curriculumQuery, setCurriculumQuery] = useState('');
   const [curriculumResults, setCurriculumResults] = useState([]);
@@ -41,12 +42,11 @@ function TeacherDashboard() {
   const [isGenerating, setIsGenerating] = useState(false);
   const [showTopicGeneratorModal, setShowTopicGeneratorModal] = useState(false);
   const [topicInput, setTopicInput] = useState('');
-  const [topicGradeLevel, setTopicGradeLevel] = useState('10');
-  const [topicDifficulty, setTopicDifficulty] = useState('medium');
   const [topicGenPreview, setTopicGenPreview] = useState('');
   const [topicGenStatus, setTopicGenStatus] = useState('');
   const [topicGenLoading, setTopicGenLoading] = useState(false);
   const [topicGenStep, setTopicGenStep] = useState(1); // 1=input, 2=preview, 3=done
+  const [topicGenStudentId, setTopicGenStudentId] = useState('');
   const [newQuiz, setNewQuiz] = useState({
     title: '',
     topic_id: '',
@@ -67,12 +67,13 @@ function TeacherDashboard() {
     option_b: '',
     option_c: '',
     option_d: '',
-    correct_answer: 'A'
+    correct_answer: 'A',
+    question_image: '',
   });
+  const [newQuestionImageFile, setNewQuestionImageFile] = useState([]);
   // AI Quiz Generation state
   const [showAIQuizModal, setShowAIQuizModal] = useState(false);
   const [aiQuizTopic, setAiQuizTopic] = useState('');
-  const [aiQuizGrade, setAiQuizGrade] = useState('10');
   const [aiQuizNumQ, setAiQuizNumQ] = useState(5);
   const [aiQuizDiff, setAiQuizDiff] = useState('medium');
   const [aiQuizSuggestions, setAiQuizSuggestions] = useState([]);
@@ -84,12 +85,26 @@ function TeacherDashboard() {
   const [analyticsData, setAnalyticsData] = useState(null);
   const [analyticsLoading, setAnalyticsLoading] = useState(false);
   // Batch generation state
-  const [batchGrade, setBatchGrade] = useState('10');
-  const [batchDiff, setBatchDiff] = useState('medium');
-  const [batchLoading, setBatchLoading] = useState(false);
   const [batchResult, setBatchResult] = useState(null);
+  const [batchLoading, setBatchLoading] = useState(false);
+  
+  // ✅ MOVED THESE UP HERE - BEFORE any state that uses them
   const navigate = useNavigate();
   const fullName = localStorage.getItem('full_name');
+  const teacherUserId = localStorage.getItem('user_id');
+  const assignedGrade = localStorage.getItem('assigned_grade') || '';
+  const assignedGradeNum = assignedGrade ? parseInt(assignedGrade, 10) : null;
+  
+  // Now these can safely use assignedGrade
+  const [heatmapGradeFilter, setHeatmapGradeFilter] = useState(assignedGrade || 'all');
+  const [heatmapSort, setHeatmapSort] = useState('mastery');
+  const [topicGradeLevel, setTopicGradeLevel] = useState(assignedGrade || '10');
+  const [topicDifficulty, setTopicDifficulty] = useState('medium');
+  const [aiQuizGrade, setAiQuizGrade] = useState(assignedGrade || '10');
+  const [batchGrade, setBatchGrade] = useState(assignedGrade || '10');
+  const [batchTopic, setBatchTopic] = useState('');
+  const [batchDiff, setBatchDiff] = useState('medium');
+  const [topicGenForAll, setTopicGenForAll] = useState(false);
 
   // ── Topic autocomplete ────────────────────────────────────────
   const handleTopicInputChange = async (val, forMaterial = false) => {
@@ -158,10 +173,15 @@ function TeacherDashboard() {
   const loadAnalytics = async () => {
     setAnalyticsLoading(true);
     try {
-      const data = await getMaterialsAnalytics();
+      const data = await getMaterialsAnalytics(
+        assignedGradeNum,
+        teacherUserId ? parseInt(teacherUserId, 10) : undefined
+      );
       setAnalyticsData(data);
-    } catch {
+    } catch (err) {
+      console.error('Analytics load failed:', err);
       setAnalyticsData(null);
+      alert('Failed to load analytics: ' + (err.response?.data?.error || err.message));
     } finally {
       setAnalyticsLoading(false);
     }
@@ -169,15 +189,27 @@ function TeacherDashboard() {
 
   // ── Batch Material Generation ─────────────────────────────────
   const handleBatchGenerate = async () => {
+    if (!batchTopic.trim()) {
+      alert('Enter a topic for batch generation.');
+      return;
+    }
     setBatchLoading(true);
     setBatchResult(null);
     try {
+      const grade = assignedGradeNum || parseInt(batchGrade, 10);
       const data = await generateBatchMaterials({
-        grade_level: parseInt(batchGrade),
-        difficulty:  batchDiff,
+        topic_name: batchTopic.trim(),
+        grade_level: grade,
+        difficulty: batchDiff,
+        teacher_id: teacherUserId ? parseInt(teacherUserId, 10) : undefined,
       });
       setBatchResult(data);
-      alert(`Batch complete: ${data.generated} materials generated in ${data.message}`);
+      const materialsData = await getPendingMaterials();
+      setPendingMaterials(materialsData.materials || []);
+      alert(
+        `${data.message}\n\n${data.generated} material(s) created for ${data.total_students} student(s). ` +
+        'Approve them in Pending Approvals so students can see them.'
+      );
     } catch (err) {
       alert('Batch generation failed: ' + (err.response?.data?.error || err.message));
     } finally {
@@ -189,15 +221,34 @@ function TeacherDashboard() {
     fetchData();
   }, []);
 
+  useEffect(() => {
+    if (assignedGradeNum) {
+      setBatchGrade(String(assignedGradeNum));
+      setTopicGradeLevel(String(assignedGradeNum));
+    }
+  }, [assignedGradeNum]);
+
+  useEffect(() => {
+    if (activeTab === 'analytics') {
+      loadAnalytics();
+    }
+  }, [activeTab]);
+
   const fetchData = async () => {
     setLoading(true);
+    setError('');
+    if (!assignedGradeNum) {
+      setError('No grade assigned to your teacher account. Contact an administrator.');
+      setLoading(false);
+      return;
+    }
     try {
       const [quizzesData, studentsData, materialsData, masteryData, heatmapResult] = await Promise.all([
         getQuizzes(),
-        getStudents(),
+        getStudents(assignedGradeNum),
         getPendingMaterials(),
-        getTeacherMasteryOverview(),
-        getHeatmap()
+        getTeacherMasteryOverview(assignedGradeNum),
+        getHeatmap(assignedGradeNum)
       ]);
       setQuizzes(quizzesData.quizzes || []);
       setStudents(studentsData.students || []);
@@ -271,9 +322,10 @@ function TeacherDashboard() {
       alert('Please fill in question text and at least two options');
       return;
     }
+    const imageUrl = newQuestionImageFile[0]?.url || newQuestion.question_image || '';
     setQuizForm({
       ...quizForm,
-      questions: [...quizForm.questions, { ...newQuestion }]
+      questions: [...quizForm.questions, { ...newQuestion, question_image: imageUrl }],
     });
     setNewQuestion({
       question_text: '',
@@ -281,8 +333,10 @@ function TeacherDashboard() {
       option_b: '',
       option_c: '',
       option_d: '',
-      correct_answer: 'A'
+      correct_answer: 'A',
+      question_image: '',
     });
+    setNewQuestionImageFile([]);
   };
 
   const handleRemoveQuestion = (index) => {
@@ -292,26 +346,54 @@ function TeacherDashboard() {
     });
   };
 
-  const handleApproveMaterial = async (materialId) => {
+  const handleApproveMaterial = async (materialId, studentId = null) => {
+    const material = pendingMaterials.find((m) => m.material_id === materialId);
+    const hasAssignment = material?.assigned_students?.length > 0;
+    if (!hasAssignment && !studentId) {
+      alert('Please select which student this material is for, then click Approve.');
+      return;
+    }
     try {
-      await approveMaterial(materialId);
+      const result = await approveMaterial(materialId, studentId);
+      if (result.error) {
+        alert(result.error);
+        return;
+      }
       setPendingMaterials(pendingMaterials.filter(m => m.material_id !== materialId));
-      alert('Material approved successfully!');
+      const names = (result.assigned_students || []).map((s) => s.full_name).join(', ');
+      alert(names
+        ? `Material approved and sent to: ${names}`
+        : 'Material approved successfully!');
+      const materialsData = await getPendingMaterials();
+      setPendingMaterials(materialsData.materials || []);
     } catch (err) {
-      alert('Failed to approve material');
+      const msg = err.response?.data?.error || 'Failed to approve material';
+      alert(msg);
     }
   };
 
-  const handleEditQuiz = (quiz) => {
+  const handleEditQuiz = async (quiz) => {
     setEditingQuiz(quiz);
-    setQuizForm({
-      title: quiz.title,
-      topic_id: quiz.topic_id || '',
-      total_marks: quiz.total_marks || '',
-      time_limit: quiz.time_limit || '30',
-      questions: quiz.questions || []
-    });
     setShowEditQuiz(true);
+    try {
+      const full = await getQuizById(quiz.quiz_id);
+      setQuizForm({
+        title: full.title || quiz.title,
+        topic_id: quiz.topic_id || '',
+        total_marks: full.total_marks || quiz.total_marks || '',
+        time_limit: full.time_limit || quiz.time_limit || '30',
+        questions: full.questions || [],
+      });
+    } catch {
+      setQuizForm({
+        title: quiz.title,
+        topic_id: quiz.topic_id || '',
+        total_marks: quiz.total_marks || '',
+        time_limit: quiz.time_limit || '30',
+        questions: quiz.questions || [],
+      });
+    }
+    setNewQuestionImageFile([]);
   };
 
   const handleUpdateQuiz = async () => {
@@ -348,7 +430,7 @@ function TeacherDashboard() {
 
   const handleLogout = () => {
     localStorage.clear();
-    navigate('/login');
+    navigate('/');
   };
 
   const handleCurriculumSearch = async (e) => {
@@ -367,6 +449,11 @@ function TeacherDashboard() {
   };
 
   const handleGenerateFromSearchResult = async (result, index, difficulty = 'medium') => {
+    const studentId = selectedStudent?.user_id;
+    if (!studentId) {
+      alert('Select a student in the Students tab first so the material is assigned to them.');
+      return;
+    }
     setCurriculumGeneratingIds(prev => ({ ...prev, [index]: true }));
     try {
       let topicName = '';
@@ -386,10 +473,17 @@ function TeacherDashboard() {
         topicName = topicName.substring(0, 50);
       }
 
-      const grade = result.grade_level || result.source_grade || 10;
-      const data = await generateMaterialByTopic(topicName, grade, difficulty);
+      const grade = assignedGradeNum || result.grade_level || result.source_grade || 10;
+      const data = await generateMaterialByTopic(
+        topicName,
+        grade,
+        difficulty,
+        teacherUserId ? parseInt(teacherUserId, 10) : undefined,
+        studentId,
+        { forAllStudents: false }
+      );
       
-      alert(`Material successfully generated from this result!\n\nTitle: ${data.title}\nGrade: ${data.grade_level}\nDifficulty: ${data.difficulty}\n\nIt is now pending approval in the "Pending Approvals" tab.`);
+      alert(`Material successfully generated for ${selectedStudent.full_name}!\n\nTitle: ${data.title}\nGrade: ${data.grade_level}\nDifficulty: ${data.difficulty}\n\nIt is now pending approval in the "Pending Approvals" tab.`);
       
       // Refresh pending approvals
       const materialsData = await getPendingMaterials();
@@ -453,7 +547,9 @@ function TeacherDashboard() {
 
       try {
         // Pass skipDedup = true so we bypass 7-day limits for batch gaps, ensuring we generate sheets cleanly.
-        const res = await generatePracticeMaterial(item.topicName, item.studentId, difficulty, true);
+        const res = await generatePracticeMaterial(
+          item.topicName, item.studentId, difficulty, true, teacherUserId, assignedGradeNum
+        );
         generated.push({
           studentName: item.studentName,
           topicName: item.topicName,
@@ -502,13 +598,22 @@ function TeacherDashboard() {
     setIsGenerating(true);
     setGenerateStatus('');
     try {
-      await generatePracticeMaterial(generateTopic, selectedStudent.user_id, generateDifficulty);
+      const res = await generatePracticeMaterial(
+        generateTopic, selectedStudent.user_id, generateDifficulty, false, teacherUserId, assignedGradeNum
+      );
+      if (res.duplicate) {
+        alert(res.message || 'Existing pending material linked to this student — you can approve it now.');
+      }
       setGenerateStatus('success');
       const materialsData = await getPendingMaterials();
       setPendingMaterials(materialsData.materials || []);
       fetchData();
     } catch (err) {
       setGenerateStatus('error');
+      const msg = err.response?.data?.error || 'Generation failed';
+      alert(err.response?.status === 409
+        ? `${msg}\n\nOpen Pending Approvals — an existing material may already be waiting.`
+        : msg);
     } finally {
       setIsGenerating(false);
     }
@@ -520,15 +625,21 @@ function TeacherDashboard() {
     setIsGenerating(true);
     setGenerateStatus('');
     try {
-      await generatePracticeMaterial(gap.topic_name, selectedStudent.user_id, generateDifficulty);
+      const res = await generatePracticeMaterial(
+        gap.topic_name, selectedStudent.user_id, generateDifficulty, false, teacherUserId, assignedGradeNum
+      );
       setGenerateStatus('success');
       const materialsData = await getPendingMaterials();
       setPendingMaterials(materialsData.materials || []);
-      alert(`Material generated for "${gap.topic_name}" — pending approval.`);
+      alert(res.duplicate
+        ? (res.message || `Existing pending material for "${gap.topic_name}" is ready to approve.`)
+        : `Material generated for "${gap.topic_name}" — pending approval.`);
     } catch (err) {
       const msg = err.response?.data?.error || 'Generation failed';
       setGenerateStatus('error');
-      alert(msg);
+      alert(err.response?.status === 409
+        ? `${msg}\n\nCheck Pending Approvals for an existing material.`
+        : msg);
     } finally {
       setIsGenerating(false);
     }
@@ -548,10 +659,11 @@ function TeacherDashboard() {
     setShowTopicGeneratorModal(true);
     setTopicGenStep(1);
     setTopicInput('');
-    setTopicGradeLevel('10');
+    setTopicGradeLevel(assignedGrade || '10');
     setTopicDifficulty('medium');
     setTopicGenPreview('');
     setTopicGenStatus('');
+    setTopicGenStudentId(selectedStudent?.user_id ? String(selectedStudent.user_id) : '');
   };
 
   const handleCloseTopicGenerator = () => {
@@ -565,7 +677,10 @@ function TeacherDashboard() {
     setTopicGenPreview('');
     setTopicGenStep(1);
     try {
-      const data = await searchCurriculumByTopic(topicInput.trim(), topicGradeLevel);
+      const data = await searchCurriculumByTopic(
+        topicInput.trim(),
+        assignedGradeNum || topicGradeLevel
+      );
       const results = data.results || [];
       if (results.length === 0) {
         setTopicGenStatus('no_results');
@@ -598,20 +713,36 @@ function TeacherDashboard() {
 
   const handleGenerateMaterialByTopic = async () => {
     if (!topicInput.trim()) return;
+    if (!topicGenForAll && !topicGenStudentId) {
+      alert('Select a student, or check "Generate for all students in my grade".');
+      return;
+    }
     setTopicGenLoading(true);
     setTopicGenStatus('');
     try {
-      const data = await generateMaterialByTopic(topicInput.trim(), topicGradeLevel, topicDifficulty);
+      const grade = assignedGradeNum || parseInt(topicGradeLevel, 10);
+      const data = await generateMaterialByTopic(
+        topicInput.trim(),
+        grade,
+        topicDifficulty,
+        teacherUserId ? parseInt(teacherUserId, 10) : undefined,
+        topicGenForAll ? null : parseInt(topicGenStudentId, 10),
+        { forAllStudents: topicGenForAll }
+      );
       setTopicGenStatus('generated');
+      const batchInfo = data.generated != null
+        ? `<p class="text-xs text-gray-700"><strong>Created:</strong> ${data.generated} material(s) for ${data.total_students} students</p>`
+        : `<p class="text-xs text-gray-700"><strong>Title:</strong> ${data.title || ''}</p>`;
       setTopicGenPreview(
         `<div class="p-3 rounded" style="background-color:#ecfdf5">
           <p class="text-sm font-semibold text-green-700">Material generated successfully!</p>
-          <p class="text-xs mt-1 text-gray-700"><strong>Title:</strong> ${data.title}</p>
-          <p class="text-xs text-gray-700"><strong>Topic:</strong> ${data.topic_name}</p>
+          ${batchInfo}
+          <p class="text-xs text-gray-700"><strong>Topic:</strong> ${data.topic_name || topicInput}</p>
           <p class="text-xs text-gray-700"><strong>Grade:</strong> ${data.grade_level}</p>
-          <p class="text-xs text-gray-700"><strong>Difficulty:</strong> ${data.difficulty}</p>
-          <p class="text-xs text-gray-700"><strong>Questions:</strong> ${data.questions_count}</p>
+          ${data.difficulty ? `<p class="text-xs text-gray-700"><strong>Difficulty:</strong> ${data.difficulty}</p>` : ''}
+          ${data.questions_count ? `<p class="text-xs text-gray-700"><strong>Questions:</strong> ${data.questions_count}</p>` : ''}
           <p class="text-xs text-gray-500 mt-1">${data.message}</p>
+          <p class="text-xs text-amber-700 mt-2">Approve in Pending Approvals so students can see them.</p>
         </div>`
       );
       setTopicGenStep(3);
@@ -660,6 +791,11 @@ function TeacherDashboard() {
               <h1 className="text-lg font-bold" style={{ color: '#2563eb' }}>EDUCARE</h1>
               <span className="text-gray-400">|</span>
               <span className="text-gray-600 text-sm">Teacher Portal</span>
+              {assignedGradeNum && (
+                <span className="text-xs font-semibold px-2 py-0.5 rounded bg-green-100 text-green-800">
+                  Grade {assignedGradeNum} only
+                </span>
+              )}
             </div>
             <div className="flex items-center gap-4">
               <span className="text-gray-600 text-sm">Welcome, {fullName}</span>
@@ -861,6 +997,7 @@ function TeacherDashboard() {
         {activeTab === 'approvals' && (
           <ApprovalsTab
             pendingMaterials={pendingMaterials}
+            students={students}
             handleApproveMaterial={handleApproveMaterial}
             setShowRejectConfirm={setShowRejectConfirm}
           />
@@ -993,14 +1130,18 @@ function TeacherDashboard() {
             {/* Batch Generation */}
             <div className="bg-white rounded-lg shadow-sm p-4" style={{ backgroundColor: '#ffffff' }}>
               <h3 className="text-sm font-semibold mb-2 text-gray-700">Batch Material Generation</h3>
-              <p className="text-xs text-gray-500 mb-3">Generate practice material for ALL weak topics for ALL students in a grade at once.</p>
-              <div className="flex gap-3 items-end mb-3">
+              <p className="text-xs text-gray-500 mb-3">
+                Generate practice material for one topic for every student in your assigned grade.
+                Each student gets their own copy (pending your approval).
+              </p>
+              <div className="flex gap-3 items-end mb-3 flex-wrap">
                 <div>
                   <label className="block text-xs text-gray-500 mb-1">Grade Level</label>
                   <select
-                    value={batchGrade}
+                    value={String(assignedGradeNum || batchGrade)}
+                    disabled={!!assignedGradeNum}
                     onChange={(e) => setBatchGrade(e.target.value)}
-                    className="border rounded px-3 py-1.5 text-sm focus:outline-none focus:ring-2"
+                    className="border rounded px-3 py-1.5 text-sm focus:outline-none focus:ring-2 disabled:bg-gray-100"
                     style={{ borderColor: '#d1d5db' }}
                   >
                     <option value="9">Grade 9</option>
@@ -1008,6 +1149,17 @@ function TeacherDashboard() {
                     <option value="11">Grade 11</option>
                     <option value="12">Grade 12</option>
                   </select>
+                </div>
+                <div className="flex-1 min-w-[200px]">
+                  <label className="block text-xs text-gray-500 mb-1">Topic</label>
+                  <input
+                    type="text"
+                    value={batchTopic}
+                    onChange={(e) => setBatchTopic(e.target.value)}
+                    placeholder="e.g. Linear equations"
+                    className="w-full border rounded px-3 py-1.5 text-sm focus:outline-none focus:ring-2"
+                    style={{ borderColor: '#d1d5db' }}
+                  />
                 </div>
                 <div>
                   <label className="block text-xs text-gray-500 mb-1">Difficulty</label>
@@ -1036,8 +1188,11 @@ function TeacherDashboard() {
                   className="rounded p-3 text-sm"
                   style={{ backgroundColor: '#ecfdf5', border: '1px solid #a7f3d0', color: '#065f46' }}
                 >
-                  {batchResult.message}: {batchResult.generated} materials generated across {batchResult.total_students || 0} student{batchResult.total_students !== 1 ? 's' : ''}.
+                  {batchResult.message}: {batchResult.generated} material(s) for{' '}
+                  {batchResult.total_students || 0} student{batchResult.total_students !== 1 ? 's' : ''}
+                  {batchResult.topic_name ? ` on "${batchResult.topic_name}"` : ''}.
                   {batchResult.failed > 0 && <span> ({batchResult.failed} failed)</span>}
+                  <span className="block mt-1 text-xs">Approve in Pending Approvals so students can access them.</span>
                 </div>
               )}
             </div>
@@ -1109,6 +1264,13 @@ function TeacherDashboard() {
                     style={{ borderColor: '#d1d5db' }}
                   />
                 </div>
+                <FilePicker
+                  context="quiz"
+                  imagesOnly
+                  files={newQuestionImageFile}
+                  onChange={(files) => setNewQuestionImageFile(files.slice(0, 1))}
+                  label="Question image (optional — shown clearly to students in the quiz)"
+                />
                 <div className="grid grid-cols-2 gap-2 mb-2">
                   <div className="flex items-center gap-1">
                     <span className="text-xs text-gray-500 w-4">A:</span>
@@ -1183,7 +1345,10 @@ function TeacherDashboard() {
                       <div key={idx} className="flex items-start justify-between p-2 rounded" style={{ backgroundColor: '#f9fafb' }}>
                         <div className="flex-1">
                           <p className="text-xs font-medium">{idx + 1}. {q.question_text.substring(0, 60)}...</p>
-                          <p className="text-xs text-gray-500">Answer: {q.correct_answer}</p>
+                          <p className="text-xs text-gray-500">Answer: {q.correct_answer}{q.question_image ? ' · 📷 has image' : ''}</p>
+                          {q.question_image && (
+                            <img src={resolveUploadUrl(q.question_image)} alt="" className="mt-1 h-12 rounded border object-cover" />
+                          )}
                         </div>
                         <button
                           type="button"
@@ -1279,6 +1444,13 @@ function TeacherDashboard() {
                     className="w-full px-2 py-1.5 text-sm border rounded"
                   />
                 </div>
+                <FilePicker
+                  context="quiz"
+                  imagesOnly
+                  files={newQuestionImageFile}
+                  onChange={(files) => setNewQuestionImageFile(files.slice(0, 1))}
+                  label="Question image (optional)"
+                />
                 <div className="grid grid-cols-2 gap-2 mb-2">
                   <div className="flex items-center gap-1">
                     <span className="text-xs text-gray-500 w-4">A:</span>
@@ -1317,7 +1489,10 @@ function TeacherDashboard() {
                       <div key={idx} className="flex items-start justify-between p-2 rounded" style={{ backgroundColor: '#f9fafb' }}>
                         <div className="flex-1">
                           <p className="text-xs font-medium">{idx + 1}. {q.question_text.substring(0, 60)}...</p>
-                          <p className="text-xs text-gray-500">Answer: {q.correct_answer}</p>
+                          <p className="text-xs text-gray-500">Answer: {q.correct_answer}{q.question_image ? ' · 📷' : ''}</p>
+                          {q.question_image && (
+                            <img src={resolveUploadUrl(q.question_image)} alt="" className="mt-1 h-12 rounded border object-cover" />
+                          )}
                         </div>
                         <button type="button" onClick={() => handleRemoveQuestion(idx)} className="text-red-500 text-xs hover:text-red-700 ml-2">✕</button>
                       </div>
@@ -1327,7 +1502,7 @@ function TeacherDashboard() {
               )}
               
               <div className="flex justify-between">
-                <button type="button" onClick={() => { setShowEditQuiz(false); setEditingQuiz(null); setQuizForm({ title: '', topic_id: '', total_marks: '', time_limit: '30', questions: [] }); }} className="px-3 py-1.5 text-sm rounded-md hover:bg-gray-200" style={{ backgroundColor: '#e5e7eb' }}>Cancel</button>
+                <button type="button" onClick={() => { setShowEditQuiz(false); setEditingQuiz(null); setQuizForm({ title: '', topic_id: '', total_marks: '', time_limit: '30', questions: [] }); setNewQuestionImageFile([]); }} className="px-3 py-1.5 text-sm rounded-md hover:bg-gray-200" style={{ backgroundColor: '#e5e7eb' }}>Cancel</button>
                 <button type="submit" className="px-3 py-1.5 text-sm rounded-md text-white" style={{ backgroundColor: '#2563eb' }}>Save Changes</button>
               </div>
             </form>
@@ -1387,7 +1562,7 @@ function TeacherDashboard() {
                             ? 'bg-green-100 text-green-800' 
                             : 'bg-red-100 text-red-800'
                         }`}>
-                          {Math.round((result.score / result.total_marks) * 100)}%
+                          {Math.min(100, Math.round((result.score / result.total_marks) * 100))}%
                         </span>
                       </td>
                       <td className="p-2 text-xs text-gray-500">
@@ -1488,9 +1663,10 @@ function TeacherDashboard() {
                     <div>
                       <label className="block text-sm font-medium text-gray-700 mb-1">Grade Level</label>
                       <select
-                        value={topicGradeLevel}
+                        value={String(assignedGradeNum || topicGradeLevel)}
+                        disabled={!!assignedGradeNum}
                         onChange={(e) => setTopicGradeLevel(e.target.value)}
-                        className="w-full px-3 py-2 text-sm border rounded focus:outline-none focus:ring-2"
+                        className="w-full px-3 py-2 text-sm border rounded focus:outline-none focus:ring-2 disabled:bg-gray-100"
                         style={{ borderColor: '#d1d5db' }}
                       >
                         <option value="9">Grade 9</option>
@@ -1513,6 +1689,35 @@ function TeacherDashboard() {
                       </select>
                     </div>
                   </div>
+                  <label className="flex items-center gap-2 text-sm text-gray-700 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={topicGenForAll}
+                      onChange={(e) => {
+                        setTopicGenForAll(e.target.checked);
+                        if (e.target.checked) setTopicGenStudentId('');
+                      }}
+                    />
+                    Generate for all students in my grade ({assignedGradeNum || topicGradeLevel})
+                  </label>
+                  {!topicGenForAll && (
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-1">Assign to one student</label>
+                      <select
+                        value={topicGenStudentId}
+                        onChange={(e) => setTopicGenStudentId(e.target.value)}
+                        className="w-full px-3 py-2 text-sm border rounded focus:outline-none focus:ring-2"
+                        style={{ borderColor: '#d1d5db' }}
+                      >
+                        <option value="">Select a student…</option>
+                        {students.map((s) => (
+                          <option key={s.user_id} value={String(s.user_id)}>
+                            {s.full_name}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  )}
                 </div>
 
                 <div className="flex justify-end gap-2 mt-4">
@@ -1551,7 +1756,7 @@ function TeacherDashboard() {
                 {topicGenStatus === 'found' && (
                   <div className="bg-gray-50 rounded-lg p-3 mb-3 max-h-60 overflow-y-auto" style={{ backgroundColor: '#f9fafb' }}>
                     <div className="text-xs text-gray-600 mb-2 font-medium">Curriculum Content Preview:</div>
-                    <div dangerouslySetInnerHTML={{ __html: topicGenPreview }} />
+                    <MathContent html={topicGenPreview} />
                   </div>
                 )}
 
@@ -1561,7 +1766,7 @@ function TeacherDashboard() {
                     <button onClick={handleCloseTopicGenerator} className="px-3 py-1.5 text-sm rounded-md hover:bg-gray-200" style={{ backgroundColor: '#e5e7eb' }}>Cancel</button>
                     <button
                       onClick={handleGenerateMaterialByTopic}
-                      disabled={topicGenLoading}
+                      disabled={topicGenLoading || (!topicGenForAll && !topicGenStudentId)}
                       className="px-4 py-1.5 text-sm rounded-md transition text-white disabled:opacity-50"
                       style={{ backgroundColor: '#7c3aed' }}
                     >
@@ -1575,7 +1780,7 @@ function TeacherDashboard() {
             {/* Step 3: Success */}
             {topicGenStep === 3 && topicGenStatus === 'generated' && (
               <div>
-                <div dangerouslySetInnerHTML={{ __html: topicGenPreview }} className="mb-4" />
+                <MathContent html={topicGenPreview} className="mb-4" />
                 <div className="flex justify-end gap-2">
                   <button onClick={handleCloseTopicGenerator} className="px-3 py-1.5 text-sm rounded-md hover:bg-gray-200" style={{ backgroundColor: '#e5e7eb' }}>Close</button>
                   <button onClick={() => { setShowRejectConfirm(null); setActiveTab('approvals'); }} className="px-4 py-1.5 text-sm rounded-md text-white" style={{ backgroundColor: '#2563eb' }}>Go to Pending Approvals</button>

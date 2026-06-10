@@ -4,7 +4,7 @@ import bcrypt
 db_config = {
     'host': 'localhost',
     'user': 'root',
-    'password': 'absra123',
+    'password': 'root123',
     'database': 'educare',
     'charset': 'utf8mb4'
 }

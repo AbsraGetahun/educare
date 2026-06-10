@@ -1,3 +1,36 @@
 @tailwind base; 
 @tailwind components; 
 @tailwind utilities; 
+
+/* Learning notes — math (KaTeX) and step lists */
+.math-content .rag-steps,
+.math-content .rag-explanation,
+.math-content .rag-formulas,
+.math-content .rag-examples {
+  margin-bottom: 1rem;
+}
+.math-content .rag-step-list {
+  list-style: decimal;
+  padding-left: 1.25rem;
+  margin-top: 0.5rem;
+}
+.math-content .rag-step-item {
+  margin-bottom: 0.5rem;
+  line-height: 1.5;
+}
+.math-content .math-latex,
+.math-text .math-inline {
+  display: inline-block;
+  margin: 0 0.1em;
+}
+.math-content .katex-block,
+.math-text .math-display {
+  margin: 0.5rem 0;
+  overflow-x: auto;
+}
+.math-content code {
+  font-size: 0.9em;
+  background: #f3f4f6;
+  padding: 0.1em 0.35em;
+  border-radius: 0.25rem;
+}

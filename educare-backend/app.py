@@ -1,10 +1,40 @@
-from flask import Flask, jsonify, request
+from flask import Flask, jsonify, request, Response
 from flask_cors import CORS
 from flask_jwt_extended import create_access_token, JWTManager, jwt_required, get_jwt_identity
 import MySQLdb
 import random
 import json
 import os
+from datetime import datetime, timedelta
+import re
+import secrets
+
+# Simple .env loader (no extra deps)
+def load_dotenv_file(path='.env'):
+    if not os.path.exists(path):
+        return
+    try:
+        with open(path, 'r', encoding='utf-8') as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith('#') or '=' not in line:
+                    continue
+                k, v = line.split('=', 1)
+                k, v = k.strip(), v.strip().strip('"\'')
+                if k and v and k not in os.environ:
+                    os.environ[k] = v
+    except Exception:
+        pass
+
+load_dotenv_file()
+load_dotenv_file(os.path.join(os.path.dirname(__file__), '.env'))
+
+# Debug: print email config (without password)
+print(f"[DEBUG] EMAIL_MODE: {os.getenv('EMAIL_MODE')}")
+print(f"[DEBUG] SMTP_HOST: {os.getenv('SMTP_HOST')}")
+print(f"[DEBUG] SMTP_USER: {os.getenv('SMTP_USER')}")
+print(f"[DEBUG] SMTP_FROM: {os.getenv('SMTP_FROM')}")
+print(f"[DEBUG] BASE_URL: {os.getenv('BASE_URL')}")
 
 # Optional imports - app will work without these
 try:
@@ -33,9 +63,28 @@ try:
 except ImportError:
     pass
 
+# Email service (real SMTP verification + OTP)
+try:
+    from email_service import (
+        send_verification_email,
+        send_welcome_email,
+        send_password_reset_otp,
+        generate_verification_token,
+        get_token_expiry,
+    )
+    EMAIL_AVAILABLE = True
+except Exception as e:
+    print(f"Warning: email_service not available: {e}")
+    EMAIL_AVAILABLE = False
+    def send_verification_email(*a, **k): return False
+    def send_welcome_email(*a, **k): return False
+    def send_password_reset_otp(*a, **k): return False
+    def generate_verification_token(): return os.urandom(32).hex()
+    def get_token_expiry(): return datetime.now() + timedelta(hours=24)
+
 app = Flask(__name__)
-CORS(app, 
-     origins=["http://localhost:3000", "http://127.0.0.1:3000"], 
+CORS(app,
+     origins=["http://localhost:3000", "http://127.0.0.1:3000", "http://localhost:3001", "http://127.0.0.1:3001"],
      supports_credentials=True,
      methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
      allow_headers=["Content-Type", "Authorization", "Accept", "X-Requested-With"],
@@ -43,22 +92,72 @@ CORS(app,
      max_age=3600)
 
 # JWT Configuration
-app.config['JWT_SECRET_KEY'] = 'educare-secret-key'
+app.config['JWT_SECRET_KEY'] = os.getenv('JWT_SECRET_KEY', 'educare-secret-key')
 app.config['JWT_ACCESS_TOKEN_EXPIRES'] = False  # tokens don't expire in dev
 jwt = JWTManager(app)
 
-# Database configuration
+# Database configuration (overrideable via .env)
 db_config = {
-    'host': 'localhost',
-    'user': 'root',
-    'password': 'absra123',
-    'database': 'educare',
+    'host': os.getenv('DB_HOST', 'localhost'),
+    'user': os.getenv('DB_USER', 'root'),
+    'password': os.getenv('DB_PASSWORD', 'absra123'),
+    'database': os.getenv('DB_NAME', 'educare'),
     'charset': 'utf8mb4'
 }
 
 # Function to get database connection
 def get_db_connection():
     return MySQLdb.connect(**db_config)
+
+
+# ==================== STRONG PASSWORD RULES ====================
+PASSWORD_RULES = {
+    'min_length': 8,
+    'max_length': 20,
+    'require_upper': True,
+    'require_lower': True,
+    'require_digit': True,
+    'require_special': True,
+    'special_chars': '!@#$%^&*'
+}
+
+def validate_strong_password(password):
+    """Return (is_valid: bool, errors: list, strength: str)"""
+    errors = []
+    if not password:
+        return False, ['Password is required'], 'Weak'
+    length = len(password)
+    if length < PASSWORD_RULES['min_length']:
+        errors.append(f'At least {PASSWORD_RULES["min_length"]} characters')
+    if length > PASSWORD_RULES['max_length']:
+        errors.append(f'At most {PASSWORD_RULES["max_length"]} characters')
+    if PASSWORD_RULES['require_upper'] and not re.search(r'[A-Z]', password):
+        errors.append('At least 1 uppercase letter (A-Z)')
+    if PASSWORD_RULES['require_lower'] and not re.search(r'[a-z]', password):
+        errors.append('At least 1 lowercase letter (a-z)')
+    if PASSWORD_RULES['require_digit'] and not re.search(r'[0-9]', password):
+        errors.append('At least 1 number (0-9)')
+    if PASSWORD_RULES['require_special'] and not re.search(r'[!@#$%^&*]', password):
+        errors.append('At least 1 special character (!@#$%^&*)')
+    
+    # Strength meter
+    score = 0
+    if length >= 8: score += 1
+    if length >= 12: score += 1
+    if re.search(r'[A-Z]', password): score += 1
+    if re.search(r'[a-z]', password): score += 1
+    if re.search(r'[0-9]', password): score += 1
+    if re.search(r'[!@#$%^&*]', password): score += 1
+    if length >= 16: score += 1
+    
+    if score <= 2:
+        strength = 'Weak'
+    elif score <= 4:
+        strength = 'Medium'
+    else:
+        strength = 'Strong'
+    
+    return len(errors) == 0, errors, strength
 
 
 def require_role(*allowed_roles):
@@ -69,6 +168,37 @@ def require_role(*allowed_roles):
     if identity.get('role') not in allowed_roles:
         return None, (jsonify({"error": "Access denied: insufficient permissions"}), 403)
     return identity, None
+
+
+ALLOWED_TEACHER_GRADES = (9, 10, 11, 12)
+
+
+def parse_teacher_grade(value):
+    """Validate teacher assigned grade (9–12). Returns int or None."""
+    if value is None or str(value).strip() == '':
+        return None
+    try:
+        grade = int(value)
+    except (TypeError, ValueError):
+        return None
+    return grade if grade in ALLOWED_TEACHER_GRADES else None
+
+
+def get_teacher_grade(cursor, user_id):
+    """Return assigned grade for a teacher user, or None."""
+    cursor.execute("SELECT grade_level FROM teachers WHERE user_id = %s", (user_id,))
+    row = cursor.fetchone()
+    if not row or row[0] is None:
+        return None
+    return int(row[0])
+
+
+def student_in_grade(cursor, student_user_id, grade_level):
+    cursor.execute(
+        "SELECT 1 FROM students WHERE user_id = %s AND grade_level = %s",
+        (student_user_id, grade_level),
+    )
+    return cursor.fetchone() is not None
 
 # ==================== DATABASE SETUP ====================
 
@@ -83,11 +213,20 @@ def init_teachers_table():
                 user_id INT NOT NULL,
                 qualification VARCHAR(255),
                 subject VARCHAR(255),
+                grade_level INT NULL,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE,
                 UNIQUE KEY unique_teacher (user_id)
             )
         """)
+        try:
+            cursor.execute("SHOW COLUMNS FROM teachers LIKE 'grade_level'")
+            if not cursor.fetchone():
+                cursor.execute(
+                    "ALTER TABLE teachers ADD COLUMN grade_level INT NULL AFTER subject"
+                )
+        except Exception as col_err:
+            print(f"Note: teachers.grade_level column: {col_err}")
         conn.commit()
         cursor.close()
         conn.close()
@@ -108,7 +247,8 @@ def init_family_table():
                 relationship VARCHAR(50) DEFAULT 'parent',
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE,
-                FOREIGN KEY (student_id) REFERENCES students(user_id) ON DELETE CASCADE,
+                -- student_id references students.student_id (canonical PK)
+                FOREIGN KEY (student_id) REFERENCES students(student_id) ON DELETE CASCADE,
                 UNIQUE KEY unique_family_student (user_id, student_id)
             )
         """)
@@ -139,10 +279,13 @@ def init_assistant_table():
                 FOREIGN KEY (student_id) REFERENCES students(student_id) ON DELETE CASCADE
             )
         """)
-        cursor.execute("""
-            CREATE INDEX IF NOT EXISTS idx_assistant_conversations_student_id
-            ON assistant_conversations(student_id)
-        """)
+        try:
+            cursor.execute(
+                "CREATE INDEX idx_assistant_conversations_student_id "
+                "ON assistant_conversations(student_id)"
+            )
+        except Exception:
+            pass
         conn.commit()
         cursor.close()
         conn.close()
@@ -151,6 +294,69 @@ def init_assistant_table():
         print(f"Error initializing assistant table: {e}")
 
 init_assistant_table()
+
+
+def init_student_materials_table():
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        import material_delivery as delivery
+        delivery.ensure_student_materials_table(cursor)
+        delivery.ensure_generation_history_material_id(cursor)
+        fk_fixed = delivery.repair_student_materials_fk_values(cursor)
+        repaired = delivery.repair_overassigned_materials(cursor)
+        unassigned = delivery.repair_unassigned_pending_materials(cursor)
+        conn.commit()
+        cursor.close()
+        conn.close()
+        print("student_materials table initialized successfully")
+        if fk_fixed:
+            print(f"Repaired {fk_fixed} student_materials FK value(s)")
+        if repaired:
+            print(f"Repaired {repaired} over-assigned material(s)")
+        if unassigned:
+            print(f"Repaired {unassigned} unassigned pending material(s)")
+    except Exception as e:
+        print(f"Error initializing student_materials table: {e}")
+
+
+init_student_materials_table()
+
+# ── Auth enhancements: profile_picture + password_resets OTP table ─────
+def init_auth_enhancements():
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        # profile_picture
+        cursor.execute("""
+            SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS
+            WHERE TABLE_SCHEMA = %s AND TABLE_NAME = 'users' AND COLUMN_NAME = 'profile_picture'
+        """, (db_config['database'],))
+        if cursor.fetchone()[0] == 0:
+            cursor.execute("ALTER TABLE users ADD COLUMN profile_picture VARCHAR(512) NULL AFTER email")
+            print("Added profile_picture column to users")
+        
+        # password_resets table
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS password_resets (
+                reset_id   INT AUTO_INCREMENT PRIMARY KEY,
+                email      VARCHAR(255) NOT NULL,
+                otp        VARCHAR(6) NOT NULL,
+                expires_at DATETIME NOT NULL,
+                attempts   INT DEFAULT 0,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                INDEX idx_pr_email (email),
+                INDEX idx_pr_expiry (expires_at)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+        """)
+        conn.commit()
+        cursor.close()
+        conn.close()
+        print("Auth enhancements (profile + OTP resets) initialized")
+    except Exception as e:
+        print(f"Warning: could not init auth enhancements: {e}")
+
+init_auth_enhancements()
 
 # ==================== BASIC ENDPOINTS ====================
 
@@ -199,30 +405,42 @@ def get_users():
 @app.route('/api/students', methods=['GET'])
 def get_students():
     try:
+        grade_level = parse_teacher_grade(request.args.get('grade_level'))
         conn = get_db_connection()
         cursor = conn.cursor()
-        cursor.execute("""
-            SELECT u.user_id, u.full_name, u.email, s.grade_level, s.section
-            FROM users u
-            JOIN students s ON u.user_id = s.user_id
-            WHERE u.role = 'student'
-        """)
+        if grade_level is not None:
+            cursor.execute("""
+                SELECT u.user_id, u.full_name, u.email, s.grade_level, s.section
+                FROM users u
+                JOIN students s ON u.user_id = s.user_id
+                WHERE u.role = 'student' AND s.grade_level = %s
+                ORDER BY u.full_name
+            """, (grade_level,))
+        else:
+            cursor.execute("""
+                SELECT u.user_id, u.full_name, u.email, s.grade_level, s.section
+                FROM users u
+                JOIN students s ON u.user_id = s.user_id
+                WHERE u.role = 'student'
+                ORDER BY u.full_name
+            """)
         students = cursor.fetchall()
-        cursor.close()
-        conn.close()
-        
-        students_list = []
-        for student in students:
-            students_list.append({
+        students_list = [
+            {
                 'user_id': student[0],
                 'full_name': student[1],
                 'email': student[2],
                 'grade_level': student[3],
-                'section': student[4]
-            })
-        
+                'section': student[4],
+            }
+            for student in students
+        ]
+        cursor.close()
+        conn.close()
         return jsonify({"students": students_list})
     except Exception as e:
+        import traceback
+        traceback.print_exc()
         return jsonify({"error": str(e)}), 500
 
 @app.route('/api/students/<int:student_id>/attempts', methods=['GET'])
@@ -290,7 +508,7 @@ def login():
         conn = get_db_connection()
         cursor = conn.cursor()
         cursor.execute(
-            "SELECT user_id, full_name, email, role, password FROM users WHERE email = %s",
+            "SELECT user_id, full_name, email, role, password, is_verified FROM users WHERE email = %s",
             (email,)
         )
         user = cursor.fetchone()
@@ -301,6 +519,7 @@ def login():
             return jsonify({"error": "Invalid credentials"}), 401
         
         stored_password = user[4]
+        is_verified = bool(user[5]) if len(user) > 5 else True
         
         # Check password
         password_valid = False
@@ -329,18 +548,46 @@ def login():
         if not password_valid:
             return jsonify({"error": "Invalid credentials"}), 401
         
+        # Enforce email verification for login (real email flow)
+        if not is_verified:
+            return jsonify({
+                "error": "Please verify your email before logging in. Check your inbox for the verification link.",
+                "requires_verification": True,
+                "email": user[2]
+            }), 403
+        
         access_token = create_access_token(identity={
             'user_id': user[0],
             'role': user[3]
         })
-        
-        return jsonify({
+
+        payload = {
             "user_id": user[0],
             "full_name": user[1],
             "email": user[2],
             "role": user[3],
-            "token": access_token
-        }), 200
+            "token": access_token,
+        }
+
+        if user[3] == 'teacher':
+            conn = get_db_connection()
+            cursor = conn.cursor()
+            assigned_grade = get_teacher_grade(cursor, user[0])
+            cursor.execute(
+                "SELECT qualification, subject FROM teachers WHERE user_id = %s",
+                (user[0],),
+            )
+            trow = cursor.fetchone()
+            cursor.close()
+            conn.close()
+            if assigned_grade is not None:
+                payload["assigned_grade"] = assigned_grade
+                payload["grade_level"] = assigned_grade
+            if trow:
+                payload["qualification"] = trow[0]
+                payload["subject"] = trow[1]
+
+        return jsonify(payload), 200
         
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -382,9 +629,34 @@ def register():
             conn.close()
             return jsonify({"error": "Email already registered"}), 400
 
+        # Enforce strong password
+        is_strong, pw_errors, strength = validate_strong_password(password)
+        if not is_strong:
+            cursor.close()
+            conn.close()
+            return jsonify({"error": "Weak password", "errors": pw_errors, "strength": strength}), 400
+
+        # Hash the password using bcrypt
+        if BCRYPT_AVAILABLE and bcrypt:
+            hashed_password = bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
+        else:
+            hashed_password = password
+
+        cursor.execute("SELECT user_id FROM users WHERE email = %s", (email,))
+        if cursor.fetchone():
+            cursor.close()
+            conn.close()
+            return jsonify({"error": "Email already registered"}), 400
+
+        # Generate verification token (24h expiry)
+        verification_token = generate_verification_token()
+        token_expiry = get_token_expiry()
+
         cursor.execute(
-            "INSERT INTO users (full_name, email, password, role, is_verified) VALUES (%s, %s, %s, 'student', TRUE)",
-            (full_name, email, hashed_password)
+            """INSERT INTO users 
+               (full_name, email, password, role, is_verified, verification_token, token_expiry) 
+               VALUES (%s, %s, %s, 'student', FALSE, %s, %s)""",
+            (full_name, email, hashed_password, verification_token, token_expiry)
         )
         user_id = int(cursor.lastrowid)
 
@@ -397,22 +669,422 @@ def register():
         cursor.close()
         conn.close()
 
-        access_token = create_access_token(identity={
-            'user_id': user_id,
-            'role': 'student'
-        })
-        
+        # Send real verification email (never auto-verify)
+        email_sent = False
+        if EMAIL_AVAILABLE:
+            try:
+                email_sent = send_verification_email(email, full_name, verification_token)
+            except Exception as em:
+                print(f"Verification email failed: {em}")
+
         return jsonify({
-            "message": "Account created successfully! You can now login.",
+            "message": "Account created! Please check your email for the verification link (expires in 24 hours).",
             "user_id": user_id,
             "full_name": full_name,
             "email": email,
             "role": "student",
-            "token": access_token
+            "email_sent": email_sent,
+            "strength": strength
         }), 201
         
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
+
+# ==================== EMAIL VERIFICATION ====================
+@app.route('/api/verify-email', methods=['GET', 'POST'])
+def verify_email():
+    """Verify email using token from link. 24h expiry enforced in DB."""
+    try:
+        token = request.args.get('token') or (request.get_json() or {}).get('token')
+        if not token:
+            return jsonify({"error": "Verification token required"}), 400
+        
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            """SELECT user_id, full_name, email, role, is_verified, token_expiry 
+               FROM users WHERE verification_token = %s""",
+            (token,)
+        )
+        row = cursor.fetchone()
+        if not row:
+            cursor.close()
+            conn.close()
+            return jsonify({"error": "Invalid or expired verification link"}), 400
+        
+        user_id, full_name, email, role, is_verified, token_expiry = row
+        
+        if is_verified:
+            cursor.close()
+            conn.close()
+            return jsonify({"message": "Email already verified. You can login now.", "already_verified": True}), 200
+        
+        # Check expiry
+        if token_expiry and datetime.now() > token_expiry:
+            cursor.close()
+            conn.close()
+            return jsonify({"error": "Verification link has expired. Please register again or request a new link."}), 400
+        
+        # Mark verified, clear token
+        cursor.execute(
+            """UPDATE users SET is_verified = TRUE, verification_token = NULL, token_expiry = NULL 
+               WHERE user_id = %s""",
+            (user_id,)
+        )
+        conn.commit()
+        cursor.close()
+        conn.close()
+        
+        # Send welcome
+        if EMAIL_AVAILABLE:
+            try:
+                send_welcome_email(email, full_name, role)
+            except Exception:
+                pass
+        
+        return jsonify({
+            "message": "Email verified successfully! You can now log in.",
+            "user_id": user_id,
+            "email": email
+        }), 200
+        
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+# ==================== FORGOT PASSWORD + OTP (6-digit, 10min, max 3 attempts) ====================
+
+def _generate_otp():
+    return f"{secrets.randbelow(900000) + 100000}"  # 6 digits, no leading zero issue
+
+@app.route('/api/forgot-password', methods=['POST'])
+def forgot_password():
+    try:
+        data = request.get_json() or {}
+        email = (data.get('email') or '').strip().lower()
+        if not email:
+            return jsonify({"error": "Email required"}), 400
+        
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT user_id, full_name FROM users WHERE email = %s", (email,))
+        user = cursor.fetchone()
+        if not user:
+            # Don't leak existence
+            cursor.close()
+            conn.close()
+            return jsonify({"message": "If the email exists, an OTP has been sent."}), 200
+        
+        user_id, full_name = user
+        
+        # Cleanup expired
+        cursor.execute("DELETE FROM password_resets WHERE expires_at < NOW()")
+        
+        # Check existing active reset attempts (rate-ish)
+        cursor.execute(
+            "SELECT attempts FROM password_resets WHERE email = %s AND expires_at > NOW() ORDER BY created_at DESC LIMIT 1",
+            (email,)
+        )
+        row = cursor.fetchone()
+        if row and row[0] >= 3:
+            cursor.close()
+            conn.close()
+            return jsonify({"error": "Too many attempts. Please wait or request after expiry."}), 429
+        
+        otp = _generate_otp()
+        expires_at = datetime.now() + timedelta(minutes=10)
+        
+        # Insert new OTP request (old ones expire naturally)
+        cursor.execute(
+            "INSERT INTO password_resets (email, otp, expires_at, attempts) VALUES (%s, %s, %s, 0)",
+            (email, otp, expires_at)
+        )
+        conn.commit()
+        cursor.close()
+        conn.close()
+        
+        # Send email (real)
+        sent = False
+        if EMAIL_AVAILABLE:
+            try:
+                sent = send_password_reset_otp(email, full_name, otp)
+            except Exception as e:
+                print(f"OTP email error: {e}")
+        
+        return jsonify({
+            "message": "If the email exists, an OTP has been sent.",
+            "otp_sent": sent,
+            "expires_in_minutes": 10
+        }), 200
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/api/reset-password', methods=['POST'])
+def reset_password():
+    """Verify 6-digit OTP (max 3 attempts) + set new strong password."""
+    try:
+        data = request.get_json() or {}
+        email = (data.get('email') or '').strip().lower()
+        otp = (data.get('otp') or '').strip()
+        new_password = data.get('new_password') or ''
+        
+        if not email or not otp or not new_password:
+            return jsonify({"error": "Email, OTP and new password required"}), 400
+        
+        # Validate new pw strength
+        is_strong, pw_errors, strength = validate_strong_password(new_password)
+        if not is_strong:
+            return jsonify({"error": "Weak password", "errors": pw_errors, "strength": strength}), 400
+        
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        
+        cursor.execute(
+            """SELECT reset_id, otp, expires_at, attempts FROM password_resets 
+               WHERE email = %s AND expires_at > NOW() 
+               ORDER BY created_at DESC LIMIT 1""",
+            (email,)
+        )
+        reset_row = cursor.fetchone()
+        if not reset_row:
+            cursor.close()
+            conn.close()
+            return jsonify({"error": "No valid OTP request or it expired. Request a new one."}), 400
+        
+        reset_id, stored_otp, expires_at, attempts = reset_row
+        
+        if attempts >= 3:
+            cursor.close()
+            conn.close()
+            return jsonify({"error": "Maximum attempts exceeded for this OTP."}), 429
+        
+        # Increment attempt
+        cursor.execute("UPDATE password_resets SET attempts = attempts + 1 WHERE reset_id = %s", (reset_id,))
+        
+        if stored_otp != otp:
+            conn.commit()
+            cursor.close()
+            conn.close()
+            return jsonify({"error": "Invalid OTP", "attempts_remaining": max(0, 2 - attempts)}), 400
+        
+        # OTP correct -> hash and update user pw
+        if BCRYPT_AVAILABLE and bcrypt:
+            hashed = bcrypt.hashpw(new_password.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
+        else:
+            hashed = new_password
+        
+        cursor.execute("UPDATE users SET password = %s WHERE email = %s", (hashed, email))
+        
+        # Invalidate this reset + old ones
+        cursor.execute("DELETE FROM password_resets WHERE email = %s", (email,))
+        
+        conn.commit()
+        cursor.close()
+        conn.close()
+        
+        return jsonify({"message": "Password reset successful. You can now log in with your new password."}), 200
+        
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+# ==================== PROFILE ENDPOINTS ====================
+@app.route('/api/profile', methods=['GET'])
+@jwt_required()
+def get_profile():
+    try:
+        identity = get_jwt_identity()
+        user_id = identity.get('user_id')
+        
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT user_id, full_name, email, role, profile_picture, is_verified FROM users WHERE user_id = %s",
+            (user_id,)
+        )
+        row = cursor.fetchone()
+        cursor.close()
+        conn.close()
+        
+        if not row:
+            return jsonify({"error": "User not found"}), 404
+        
+        return jsonify({
+            "user_id": row[0],
+            "full_name": row[1],
+            "email": row[2],
+            "role": row[3],
+            "profile_picture": row[4],
+            "is_verified": bool(row[5])
+        }), 200
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/api/profile', methods=['PUT'])
+@jwt_required()
+def update_profile():
+    """Edit name and/or email. If email changes, optionally force re-verify (here we keep verified if was)."""
+    try:
+        identity = get_jwt_identity()
+        user_id = identity.get('user_id')
+        data = request.get_json() or {}
+        
+        new_name = (data.get('full_name') or '').strip()
+        new_email = (data.get('email') or '').strip().lower()
+        
+        if not new_name and not new_email:
+            return jsonify({"error": "Nothing to update"}), 400
+        
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        
+        # Get current
+        cursor.execute("SELECT full_name, email FROM users WHERE user_id = %s", (user_id,))
+        cur = cursor.fetchone()
+        if not cur:
+            cursor.close()
+            conn.close()
+            return jsonify({"error": "User not found"}), 404
+        cur_name, cur_email = cur
+        
+        final_name = new_name or cur_name
+        final_email = new_email or cur_email
+        
+        if new_email and new_email != cur_email:
+            cursor.execute("SELECT user_id FROM users WHERE email = %s AND user_id != %s", (new_email, user_id))
+            if cursor.fetchone():
+                cursor.close()
+                conn.close()
+                return jsonify({"error": "Email already in use by another account"}), 400
+        
+        cursor.execute(
+            "UPDATE users SET full_name = %s, email = %s WHERE user_id = %s",
+            (final_name, final_email, user_id)
+        )
+        conn.commit()
+        cursor.close()
+        conn.close()
+        
+        return jsonify({"message": "Profile updated successfully", "full_name": final_name, "email": final_email}), 200
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/api/profile/password', methods=['PUT'])
+@jwt_required()
+def change_password():
+    """Change password: requires old + new + confirm, strong rules."""
+    try:
+        identity = get_jwt_identity()
+        user_id = identity.get('user_id')
+        data = request.get_json() or {}
+        
+        old_pw = data.get('old_password') or ''
+        new_pw = data.get('new_password') or ''
+        confirm = data.get('confirm_password') or ''
+        
+        if not old_pw or not new_pw or not confirm:
+            return jsonify({"error": "old_password, new_password and confirm_password required"}), 400
+        if new_pw != confirm:
+            return jsonify({"error": "New passwords do not match"}), 400
+        
+        is_strong, pw_errors, strength = validate_strong_password(new_pw)
+        if not is_strong:
+            return jsonify({"error": "Weak password", "errors": pw_errors, "strength": strength}), 400
+        
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT password FROM users WHERE user_id = %s", (user_id,))
+        row = cursor.fetchone()
+        if not row:
+            cursor.close()
+            conn.close()
+            return jsonify({"error": "User not found"}), 404
+        
+        stored = row[0]
+        valid_old = False
+        if stored:
+            if BCRYPT_AVAILABLE and stored.startswith('$2'):
+                try:
+                    valid_old = bcrypt.checkpw(old_pw.encode('utf-8'), stored.encode('utf-8'))
+                except:
+                    valid_old = False
+            else:
+                valid_old = (old_pw == stored)
+        
+        if not valid_old:
+            cursor.close()
+            conn.close()
+            return jsonify({"error": "Current password is incorrect"}), 401
+        
+        # Update to new hash
+        if BCRYPT_AVAILABLE and bcrypt:
+            new_hash = bcrypt.hashpw(new_pw.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
+        else:
+            new_hash = new_pw
+        
+        cursor.execute("UPDATE users SET password = %s WHERE user_id = %s", (new_hash, user_id))
+        conn.commit()
+        cursor.close()
+        conn.close()
+        
+        return jsonify({"message": "Password changed successfully"}), 200
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+# Simple profile picture upload (reuses upload logic, stores under uploads/profile/)
+@app.route('/api/profile/picture', methods=['POST'])
+@jwt_required()
+def upload_profile_picture():
+    try:
+        identity = get_jwt_identity()
+        user_id = identity.get('user_id')
+        
+        if 'file' not in request.files:
+            return jsonify({"error": "No file provided"}), 400
+        file = request.files['file']
+        if not file.filename:
+            return jsonify({"error": "Empty filename"}), 400
+        
+        # Validate image type for profile
+        allowed_ext = {'.jpg', '.jpeg', '.png', '.gif'}
+        ext = os.path.splitext(file.filename)[1].lower()
+        if ext not in allowed_ext:
+            return jsonify({"error": "Only JPG, PNG, GIF allowed for profile pictures"}), 400
+        
+        # Size limit 5MB
+        file.stream.seek(0, 2)
+        size = file.stream.tell()
+        file.stream.seek(0)
+        if size > 5 * 1024 * 1024:
+            return jsonify({"error": "Profile picture too large (max 5MB)"}), 400
+        
+        # Save to uploads/profile/
+        profile_dir = os.path.join(os.path.dirname(__file__), 'uploads', 'profile')
+        os.makedirs(profile_dir, exist_ok=True)
+        unique = f"{datetime.utcnow().strftime('%Y%m%d')}_{os.urandom(6).hex()}_{file.filename[:60]}"
+        safe_name = re.sub(r'[^\w.\-]+', '_', unique)
+        save_path = os.path.join(profile_dir, safe_name)
+        file.save(save_path)
+        
+        url = f'/uploads/profile/{safe_name}'
+        
+        # Update DB
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("UPDATE users SET profile_picture = %s WHERE user_id = %s", (url, user_id))
+        conn.commit()
+        cursor.close()
+        conn.close()
+        
+        return jsonify({"profile_picture": url, "message": "Profile picture updated"}), 200
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
 
 # ==================== QUIZ ENDPOINTS ====================
 
@@ -468,22 +1140,48 @@ def get_quiz(quiz_id):
 
         questions = None
         try:
-            cursor.execute("""
-                SELECT question_id, question_text, option_a, option_b, option_c, option_d, correct_answer
-                FROM quiz_questions
-                WHERE quiz_id = %s
-                ORDER BY question_id
-            """, (quiz_id,))
+            has_image_col = False
+            try:
+                cursor.execute("SHOW COLUMNS FROM quiz_questions LIKE 'question_image'")
+                has_image_col = cursor.fetchone() is not None
+            except Exception:
+                pass
+
+            if has_image_col:
+                cursor.execute("""
+                    SELECT question_id, question_text, question_image,
+                           option_a, option_b, option_c, option_d, correct_answer
+                    FROM quiz_questions
+                    WHERE quiz_id = %s
+                    ORDER BY question_id
+                """, (quiz_id,))
+            else:
+                cursor.execute("""
+                    SELECT question_id, question_text, option_a, option_b, option_c, option_d, correct_answer
+                    FROM quiz_questions
+                    WHERE quiz_id = %s
+                    ORDER BY question_id
+                """, (quiz_id,))
             question_rows = cursor.fetchall()
             if question_rows:
                 questions = []
                 for row in question_rows:
-                    questions.append({
-                        'question_id': row[0],
-                        'question_text': row[1],
-                        'options': [row[2], row[3], row[4] or '', row[5] or ''],
-                        'correct_answer': row[6]
-                    })
+                    if has_image_col:
+                        questions.append({
+                            'question_id': row[0],
+                            'question_text': row[1],
+                            'question_image': row[2] or '',
+                            'options': [row[3], row[4], row[5] or '', row[6] or ''],
+                            'correct_answer': row[7]
+                        })
+                    else:
+                        questions.append({
+                            'question_id': row[0],
+                            'question_text': row[1],
+                            'question_image': '',
+                            'options': [row[2], row[3], row[4] or '', row[5] or ''],
+                            'correct_answer': row[6]
+                        })
         except Exception:
             pass
 
@@ -555,15 +1253,22 @@ def submit_quiz(quiz_id):
         if not correct_answers:
             correct_answers = {1: 'B', 2: 'C', 3: 'C'}
 
-        score = 0
-        total_questions = len(correct_answers) if correct_answers else 1
-        points_per_question = 10
+        cursor.execute("SELECT total_marks FROM quizzes WHERE quiz_id = %s", (quiz_id,))
+        quiz_row = cursor.fetchone()
+        num_questions = max(len(correct_answers), len(answers), 1)
+        total_marks = int(quiz_row[0]) if quiz_row and quiz_row[0] else num_questions
+        if total_marks <= 0:
+            total_marks = num_questions
 
+        correct_count = 0
         for answer in answers:
             question_id = answer.get('question_id')
             user_answer = answer.get('answer')
             if correct_answers.get(question_id) == user_answer:
-                score += points_per_question
+                correct_count += 1
+
+        # Distribute quiz total_marks evenly across questions (e.g. 4 Q × 5 marks = 20 total)
+        score = int(round((correct_count / num_questions) * total_marks))
 
         cursor.execute("""
             INSERT INTO quiz_attempt (student_id, quiz_id, score, completed_at)
@@ -593,12 +1298,13 @@ def submit_quiz(quiz_id):
         cursor.close()
         conn.close()
 
-        total_possible = len(answers) * points_per_question
+        percentage = min(100.0, round((score / total_marks) * 100, 1)) if total_marks > 0 else 0.0
         response_data = {
             "message": "Quiz submitted successfully",
             "score": score,
-            "total_possible": total_possible,
-            "percentage": (score / total_possible) * 100 if total_possible > 0 else 0
+            "total_marks": total_marks,
+            "total_possible": total_marks,
+            "percentage": percentage,
         }
         if mastery_update:
             response_data["mastery_update"] = mastery_update
@@ -689,22 +1395,48 @@ def create_quiz():
         quiz_id = cursor.lastrowid
         print(f"[DEBUG] Quiz created with ID: {quiz_id}")
         
+        has_image_col = False
+        try:
+            cursor.execute("SHOW COLUMNS FROM quiz_questions LIKE 'question_image'")
+            has_image_col = cursor.fetchone() is not None
+        except Exception:
+            pass
+
         questions_saved = 0
         for q in questions:
             try:
-                cursor.execute("""
-                    INSERT INTO quiz_questions 
-                    (quiz_id, question_text, option_a, option_b, option_c, option_d, correct_answer)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s)
-                """, (
-                    quiz_id,
-                    q.get('question_text', ''),
-                    q.get('option_a', ''),
-                    q.get('option_b', ''),
-                    q.get('option_c') or '',
-                    q.get('option_d') or '',
-                    q.get('correct_answer', 'A')
-                ))
+                img = (q.get('question_image') or '').strip()
+                if img and not img.startswith('/uploads/quiz/'):
+                    img = ''
+                if has_image_col:
+                    cursor.execute("""
+                        INSERT INTO quiz_questions
+                        (quiz_id, question_text, question_image, option_a, option_b, option_c, option_d, correct_answer)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                    """, (
+                        quiz_id,
+                        q.get('question_text', ''),
+                        img or None,
+                        q.get('option_a', ''),
+                        q.get('option_b', ''),
+                        q.get('option_c') or '',
+                        q.get('option_d') or '',
+                        q.get('correct_answer', 'A')
+                    ))
+                else:
+                    cursor.execute("""
+                        INSERT INTO quiz_questions
+                        (quiz_id, question_text, option_a, option_b, option_c, option_d, correct_answer)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s)
+                    """, (
+                        quiz_id,
+                        q.get('question_text', ''),
+                        q.get('option_a', ''),
+                        q.get('option_b', ''),
+                        q.get('option_c') or '',
+                        q.get('option_d') or '',
+                        q.get('correct_answer', 'A')
+                    ))
                 questions_saved += 1
             except Exception as qe:
                 print(f"[DEBUG] Error saving question: {qe}")
@@ -748,22 +1480,48 @@ def update_quiz(quiz_id):
         
         # Delete old questions and insert new ones
         cursor.execute("DELETE FROM quiz_questions WHERE quiz_id = %s", (quiz_id,))
+
+        has_image_col = False
+        try:
+            cursor.execute("SHOW COLUMNS FROM quiz_questions LIKE 'question_image'")
+            has_image_col = cursor.fetchone() is not None
+        except Exception:
+            pass
         
         questions_saved = 0
         for q in questions:
-            cursor.execute("""
-                INSERT INTO quiz_questions 
-                (quiz_id, question_text, option_a, option_b, option_c, option_d, correct_answer)
-                VALUES (%s, %s, %s, %s, %s, %s, %s)
-            """, (
-                quiz_id,
-                q.get('question_text', ''),
-                q.get('option_a', ''),
-                q.get('option_b', ''),
-                q.get('option_c') or '',
-                q.get('option_d') or '',
-                q.get('correct_answer', 'A')
-            ))
+            img = (q.get('question_image') or '').strip()
+            if img and not img.startswith('/uploads/quiz/'):
+                img = ''
+            if has_image_col:
+                cursor.execute("""
+                    INSERT INTO quiz_questions
+                    (quiz_id, question_text, question_image, option_a, option_b, option_c, option_d, correct_answer)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                """, (
+                    quiz_id,
+                    q.get('question_text', ''),
+                    img or None,
+                    q.get('option_a', ''),
+                    q.get('option_b', ''),
+                    q.get('option_c') or '',
+                    q.get('option_d') or '',
+                    q.get('correct_answer', 'A')
+                ))
+            else:
+                cursor.execute("""
+                    INSERT INTO quiz_questions
+                    (quiz_id, question_text, option_a, option_b, option_c, option_d, correct_answer)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s)
+                """, (
+                    quiz_id,
+                    q.get('question_text', ''),
+                    q.get('option_a', ''),
+                    q.get('option_b', ''),
+                    q.get('option_c') or '',
+                    q.get('option_d') or '',
+                    q.get('correct_answer', 'A')
+                ))
             questions_saved += 1
         
         conn.commit()
@@ -796,15 +1554,19 @@ def delete_quiz(quiz_id):
 
 @app.route('/api/family/register', methods=['POST'])
 def family_register():
+    conn = None
+    cursor = None
     try:
-        data = request.get_json()
-        full_name = data.get('full_name')
-        email = data.get('email')
-        password = data.get('password')
-        student_email = data.get('student_email')  # Student email to link
-        relationship = data.get('relationship', 'parent')
+        data = request.get_json(silent=True) or {}
+        full_name = (data.get('full_name') or '').strip()
+        email = (data.get('email') or '').strip().lower()
+        password = data.get('password') or ''
+        # Prefer student_id (selected from list) but keep student_email for backward compatibility
+        student_id = data.get('student_id')
+        student_email = (data.get('student_email') or '').strip().lower()  # Back-compat: Student email to link
+        relationship = (data.get('relationship') or 'parent').strip() or 'parent'
         
-        if not full_name or not email or not password or not student_email:
+        if not full_name or not email or not password or (not student_id and not student_email):
             return jsonify({"error": "All fields required"}), 400
         
         # Hash the password using bcrypt
@@ -822,66 +1584,135 @@ def family_register():
             conn.close()
             return jsonify({"error": "Email already registered"}), 400
         
-        # Look up student by email
-        cursor.execute("SELECT user_id FROM users WHERE email = %s AND role = 'student'", (student_email,))
-        student = cursor.fetchone()
-        if not student:
+        # Enforce strong password for family too
+        is_strong, pw_errors, strength = validate_strong_password(password)
+        if not is_strong:
             cursor.close()
             conn.close()
-            return jsonify({"error": "Student with this email not found"}), 400
+            return jsonify({"error": "Weak password", "errors": pw_errors}), 400
         
-        student_id = student[0]
+        # Resolve canonical students.student_id (FK target) + students.user_id (API ID)
+        # Incoming "student_id" from frontend is users.user_id (selected from list).
+        if student_id is not None and str(student_id).strip() != '':
+            try:
+                student_id = int(student_id)
+            except (TypeError, ValueError):
+                cursor.close()
+                conn.close()
+                return jsonify({"error": "student_id must be a number"}), 400
+            cursor.execute("SELECT student_id FROM students WHERE user_id = %s", (student_id,))
+            row = cursor.fetchone()
+            if not row:
+                cursor.close()
+                conn.close()
+                return jsonify({"error": "Student with this ID not found"}), 400
+            student_user_id = int(student_id)
+            student_pk_id = int(row[0])
+        else:
+            cursor.execute("SELECT user_id FROM users WHERE email = %s AND role = 'student'", (student_email,))
+            student = cursor.fetchone()
+            if not student:
+                cursor.close()
+                conn.close()
+                return jsonify({"error": "Student with this email not found"}), 400
+            student_user_id = int(student[0])
+            cursor.execute("SELECT student_id FROM students WHERE user_id = %s", (student_user_id,))
+            row = cursor.fetchone()
+            if not row:
+                cursor.close()
+                conn.close()
+                return jsonify({"error": "Student record not found"}), 400
+            student_pk_id = int(row[0])
         
+        # Generate verification for family (real email)
+        verification_token = generate_verification_token()
+        token_expiry = get_token_expiry()
+
         cursor.execute(
-            "INSERT INTO users (full_name, email, password, role, is_verified) VALUES (%s, %s, %s, 'family', TRUE)",
-            (full_name, email, hashed_password)
+            """INSERT INTO users 
+               (full_name, email, password, role, is_verified, verification_token, token_expiry) 
+               VALUES (%s, %s, %s, 'family', FALSE, %s, %s)""",
+            (full_name, email, hashed_password, verification_token, token_expiry)
         )
-        user_id = cursor.lastrowid()
+        user_id = int(cursor.lastrowid)
         
         # Link to student
         cursor.execute(
             "INSERT INTO family (user_id, student_id, relationship) VALUES (%s, %s, %s)",
-            (user_id, student_id, relationship)
+            (user_id, student_pk_id, relationship)
         )
         
-        conn.commit()
+        # Send verification email
+        email_sent = False
+        if not EMAIL_AVAILABLE:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            return jsonify({
+                "error": "Email verification service is unavailable. Please contact support.",
+                "email_service_available": False
+            }), 503
+        try:
+            email_sent = send_verification_email(email, full_name, verification_token)
+        except Exception:
+            email_sent = False
+
+        if not email_sent:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            return jsonify({
+                "error": "Failed to send verification email. Please check the email address and try again."
+            }), 502
 
         cursor.execute("""
-            SELECT f.student_id, u.full_name, s.grade_level, s.section
+            SELECT s.user_id, u.full_name, s.grade_level, s.section
             FROM family f
-            JOIN students s ON f.student_id = s.user_id
+            JOIN students s ON f.student_id = s.student_id
             JOIN users u ON s.user_id = u.user_id
             WHERE f.user_id = %s
         """, (user_id,))
         linked = cursor.fetchall() or []
         students_list = [{
-            'user_id': row[0],
+            'student_id': row[0],
             'full_name': row[1],
             'grade_level': row[2],
             'section': row[3],
         } for row in linked]
 
-        cursor.close()
-        conn.close()
+        conn.commit()
 
-        access_token = create_access_token(identity={
-            'user_id': user_id,
-            'role': 'family'
-        })
-        
         return jsonify({
-            "message": "Account created successfully! You can now login.",
+            "message": "Account created! Please check your email for the 24-hour verification link before logging in.",
             "user_id": user_id,
             "full_name": full_name,
             "email": email,
             "role": "family",
-            "token": access_token,
+            "email_sent": email_sent,
             "students": students_list,
             "linked_students": len(students_list)
         }), 201
         
     except Exception as e:
+        if conn:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
         return jsonify({"error": str(e)}), 500
+    finally:
+        if cursor:
+            try:
+                cursor.close()
+            except Exception:
+                pass
+        if conn:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
 @app.route('/api/family/students/list', methods=['GET'])
 def list_students_for_family():
@@ -929,7 +1760,7 @@ def family_login():
         conn = get_db_connection()
         cursor = conn.cursor()
         cursor.execute(
-            "SELECT user_id, full_name, email, role, password FROM users WHERE email = %s",
+            "SELECT user_id, full_name, email, role, password, is_verified FROM users WHERE email = %s",
             (email,)
         )
         user = cursor.fetchone()
@@ -940,6 +1771,7 @@ def family_login():
             return jsonify({"error": "Invalid credentials"}), 401
         
         stored_password = user[4]
+        is_verified = bool(user[5]) if len(user) > 5 else True
         
         # Check bcrypt hash first, then fall back to plain text for migration
         password_valid = False
@@ -961,6 +1793,15 @@ def family_login():
             conn.close()
             return jsonify({"error": "Invalid credentials"}), 401
         
+        if not is_verified:
+            cursor.close()
+            conn.close()
+            return jsonify({
+                "error": "Please verify your email before logging in.",
+                "requires_verification": True,
+                "email": user[2]
+            }), 403
+        
         # Check if user has family role
         if user[3] != 'family':
             cursor.close()
@@ -969,9 +1810,9 @@ def family_login():
         
         # Get linked students
         cursor.execute("""
-            SELECT f.student_id, u.full_name, s.grade_level, s.section
+            SELECT s.user_id, u.full_name, s.grade_level, s.section
             FROM family f
-            JOIN students s ON f.student_id = s.user_id
+            JOIN students s ON f.student_id = s.student_id
             JOIN users u ON s.user_id = u.user_id
             WHERE f.user_id = %s
         """, (user[0],))
@@ -1022,9 +1863,9 @@ def get_family_students():
         conn = get_db_connection()
         cursor = conn.cursor()
         cursor.execute("""
-            SELECT f.student_id, u.full_name, s.grade_level, s.section
+            SELECT s.user_id, u.full_name, s.grade_level, s.section
             FROM family f
-            JOIN students s ON f.student_id = s.user_id
+            JOIN students s ON f.student_id = s.student_id
             JOIN users u ON s.user_id = u.user_id
             WHERE f.user_id = %s
         """, (user_id,))
@@ -1144,77 +1985,35 @@ def get_family_student_recommendations(student_id):
 
 @app.route('/api/family/student/<int:student_id>/report', methods=['GET'])
 def get_family_student_report(student_id):
+    """Download a printable HTML student progress report."""
     try:
+        import family_report as freport
         conn = get_db_connection()
         cursor = conn.cursor()
-        
-        # Get student info
-        cursor.execute("""
-            SELECT u.full_name, s.grade_level, s.section
-            FROM users u
-            JOIN students s ON u.user_id = s.user_id
-            WHERE u.user_id = %s
-        """, (student_id,))
-        student_info = cursor.fetchone()
-        
-        if not student_info:
-            cursor.close()
-            conn.close()
-            return jsonify({"error": "Student not found"}), 404
-        
-        from gap_utils import QUIZ_STUDENT_JOIN, fetch_student_gaps
-        cursor.execute(f"""
-            SELECT qa.attempt_id, qa.quiz_id, qa.score, qa.completed_at,
-                   q.title, t.topic_name, q.total_marks
-            FROM quiz_attempt qa
-            JOIN quizzes q ON qa.quiz_id = q.quiz_id
-            JOIN topics t ON q.topic_id = t.topic_id
-            {QUIZ_STUDENT_JOIN}
-            WHERE s_qa.user_id = %s
-            ORDER BY qa.completed_at ASC
-        """, (student_id,))
-        attempts = cursor.fetchall()
-        gaps_list = fetch_student_gaps(cursor, student_id)
-        
+
+        report_data = freport.fetch_report_data(cursor, student_id)
         cursor.close()
         conn.close()
-        
-        attempts_list = []
-        for attempt in attempts:
-            attempts_list.append({
-                'attempt_id': attempt[0],
-                'quiz_id': attempt[1],
-                'score': attempt[2],
-                'completed_at': str(attempt[3]),
-                'quiz_title': attempt[4],
-                'topic': attempt[5],
-                'total_marks': attempt[6],
-                'percentage': round((attempt[2] / attempt[6]) * 100, 1) if attempt[6] else 0
-            })
-        
-        # Calculate overall stats
-        total_attempts = len(attempts_list)
-        avg_score = round(sum(a['percentage'] for a in attempts_list) / total_attempts, 1) if total_attempts > 0 else 0
-        highest_score = max((a['percentage'] for a in attempts_list), default=0)
-        lowest_score = min((a['percentage'] for a in attempts_list), default=0)
-        
-        return jsonify({
-            "student": {
-                "name": student_info[0],
-                "grade_level": student_info[1],
-                "section": student_info[2]
+
+        if not report_data:
+            return jsonify({"error": "Student not found"}), 404
+
+        html_content = freport.build_report_html(report_data)
+        safe_name = (report_data['student'].get('name') or 'Student').replace(' ', '_')
+        filename = f"{safe_name}_Progress_Report.html"
+
+        return Response(
+            html_content,
+            mimetype='text/html',
+            headers={
+                'Content-Disposition': f'attachment; filename="{filename}"',
+                'Content-Type': 'text/html; charset=utf-8',
             },
-            "stats": {
-                "total_attempts": total_attempts,
-                "average_score": avg_score,
-                "highest_score": highest_score,
-                "lowest_score": lowest_score,
-                "topics_needing_work": len(gaps_list)
-            },
-            "attempts": attempts_list,
-            "gaps": gaps_list
-        })
+        )
     except Exception as e:
+        print(f"Error generating family report: {e}")
+        import traceback
+        traceback.print_exc()
         return jsonify({"error": str(e)}), 500
 
 # ==================== MATERIAL APPROVAL ENDPOINTS ====================
@@ -1222,41 +2021,104 @@ def get_family_student_report(student_id):
 @app.route('/api/materials/pending', methods=['GET'])
 def get_pending_materials():
     try:
+        import material_delivery as delivery
         conn = get_db_connection()
         cursor = conn.cursor()
-        
-        cursor.execute("""
-            SELECT m.material_id, m.title, m.content, m.source_citation,
-                   m.generated_date, t.topic_name
+
+        extra_cols = delivery.existing_material_columns(cursor)
+        select_cols = delivery.build_material_select('m', 't')
+        select_cols += [f'm.{c}' for c in extra_cols]
+        select_sql = ', '.join(select_cols)
+
+        cursor.execute(f"""
+            SELECT {select_sql}
             FROM material m
             LEFT JOIN topics t ON m.topic_id = t.topic_id
             WHERE m.approval_status = 'Pending'
             ORDER BY m.generated_date DESC
         """)
         materials = cursor.fetchall() or []
-        
+
+        delivery.repair_unassigned_pending_materials(cursor)
+        conn.commit()
+
         materials_list = []
         for material in materials:
-            materials_list.append({
-                'material_id': material[0],
-                'title': material[1],
-                'content': material[2],
-                'source_citation': material[3],
-                'generated_date': str(material[4]) if material[4] else '',
-                'topic_name': material[5] if material[5] else ''
-            })
-        
+            delivery.ensure_material_assigned(cursor, material[0])
+            assigned = delivery.get_assigned_students(cursor, material[0])
+            materials_list.append(
+                delivery.material_row_to_dict(material, extra_cols, assigned_students=assigned)
+            )
+
+        conn.commit()
         cursor.close()
         conn.close()
-        
+
         return jsonify({"materials": materials_list})
     except Exception as e:
         print(f"Error in /api/materials/pending: {e}")
-        return jsonify({"error": str(e), "materials": []}), 200
+        import traceback
+        traceback.print_exc()
+        return jsonify({"error": str(e), "materials": []}), 500
+
+@app.route('/api/materials/<int:material_id>/assign', methods=['POST'])
+def assign_material_to_student(material_id):
+    """Assign a pending material to a student (users.user_id) before approval."""
+    try:
+        import material_delivery as delivery
+        data = request.get_json() or {}
+        student_id = data.get('student_id')
+        if not student_id:
+            return jsonify({"error": "student_id is required"}), 400
+
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT material_id FROM material WHERE material_id = %s", (material_id,))
+        if not cursor.fetchone():
+            cursor.close()
+            conn.close()
+            return jsonify({"error": "Material not found"}), 404
+
+        cursor.execute(
+            """
+            SELECT t.grade_level FROM material m
+            LEFT JOIN topics t ON m.topic_id = t.topic_id
+            WHERE m.material_id = %s
+            """,
+            (material_id,),
+        )
+        grade_row = cursor.fetchone()
+        mat_grade = int(grade_row[0]) if grade_row and grade_row[0] else None
+        count = delivery.ensure_material_assigned(
+            cursor, material_id, student_id=student_id, grade_level=mat_grade
+        )
+        if not count:
+            cursor.close()
+            conn.close()
+            return jsonify({
+                "error": "Could not assign material — student not found in class roster",
+            }), 400
+
+        assigned = delivery.get_assigned_students(cursor, material_id)
+        conn.commit()
+        cursor.close()
+        conn.close()
+        return jsonify({
+            "message": "Material assigned to student",
+            "assigned_students": assigned,
+        }), 200
+    except Exception as e:
+        print(f"Error in /api/materials/{material_id}/assign: {e}")
+        return jsonify({"error": str(e)}), 500
+
 
 @app.route('/api/materials/approve/<int:material_id>', methods=['POST'])
 def approve_material(material_id):
     try:
+        import material_delivery as delivery
+        data = request.get_json() or {}
+        student_id = data.get('student_id')
+
         conn = get_db_connection()
         cursor = conn.cursor()
         
@@ -1267,19 +2129,50 @@ def approve_material(material_id):
             conn.close()
             return jsonify({"error": "Material not found"}), 404
         
+        delivery.ensure_generation_history_material_id(cursor)
+
+        # Backfill assignment from body, generation history, or existing row
+        cursor.execute(
+            """
+            SELECT t.grade_level FROM material m
+            LEFT JOIN topics t ON m.topic_id = t.topic_id
+            WHERE m.material_id = %s
+            """,
+            (material_id,),
+        )
+        grade_row = cursor.fetchone()
+        mat_grade = int(grade_row[0]) if grade_row and grade_row[0] else None
+        delivery.ensure_material_assigned(
+            cursor, material_id, student_id=student_id, grade_level=mat_grade
+        )
+        assigned = delivery.get_assigned_students(cursor, material_id)
+
+        if not assigned:
+            cursor.close()
+            conn.close()
+            return jsonify({
+                "error": (
+                    "Select which student this material is for, then approve again."
+                ),
+            }), 400
+
         # Update status to Approved
         cursor.execute(
             "UPDATE material SET approval_status = 'Approved' WHERE material_id = %s",
             (material_id,)
         )
         conn.commit()
+        assigned = delivery.get_assigned_students(cursor, material_id)
         cursor.close()
         conn.close()
         
-        return jsonify({"message": "Material approved successfully"}), 200
+        return jsonify({
+            "message": "Material approved successfully",
+            "assigned_students": assigned,
+        }), 200
     except Exception as e:
         print(f"Error in /api/materials/approve/{material_id}: {e}")
-        return jsonify({"error": str(e)}), 200
+        return jsonify({"error": str(e)}), 500
 
 @app.route('/api/materials/reject/<int:material_id>', methods=['POST'])
 def reject_material(material_id):
@@ -1315,50 +2208,40 @@ def get_approved_materials():
         
         conn = get_db_connection()
         cursor = conn.cursor()
-        
+        import material_delivery as delivery
+
+        extra_cols = delivery.existing_material_columns(cursor)
+        select_cols = delivery.build_material_select('m', 't', include_topic_id=True)
+        select_cols += [f'm.{c}' for c in extra_cols]
+        select_sql = ', '.join(select_cols)
+
+        delivery.ensure_student_materials_table(cursor)
+
         if student_id:
-            from gap_utils import QUIZ_STUDENT_JOIN
+            user_id = delivery.resolve_student_user_id(cursor, student_id)
+            sm_join = delivery.student_materials_filter_by_user_sql('%s')
             cursor.execute(f"""
-                SELECT m.material_id, m.title, m.content, m.source_citation,
-                       m.generated_date, t.topic_name
+                SELECT {select_sql}
                 FROM material m
                 JOIN topics t ON m.topic_id = t.topic_id
+                {sm_join}
                 WHERE m.approval_status = 'Approved'
-                AND m.topic_id IN (
-                    SELECT t2.topic_id
-                    FROM quiz_attempt qa
-                    JOIN quizzes q ON qa.quiz_id = q.quiz_id
-                    JOIN topics t2 ON q.topic_id = t2.topic_id
-                    {QUIZ_STUDENT_JOIN}
-                    WHERE s_qa.user_id = %s
-                    GROUP BY t2.topic_id
-                    HAVING AVG(qa.score * 100.0 / NULLIF(q.total_marks, 0)) < 70
-                )
                 ORDER BY m.generated_date DESC
-            """, (student_id,))
+            """, (user_id or student_id,))
         else:
-            # Get all approved materials
-            cursor.execute("""
-                SELECT m.material_id, m.title, m.content, m.source_citation,
-                       m.generated_date, t.topic_name
+            cursor.execute(f"""
+                SELECT {select_sql}
                 FROM material m
                 JOIN topics t ON m.topic_id = t.topic_id
                 WHERE m.approval_status = 'Approved'
                 ORDER BY m.generated_date DESC
             """)
         
-        materials = cursor.fetchall()
-        
-        materials_list = []
-        for material in materials:
-            materials_list.append({
-                'material_id': material[0],
-                'title': material[1],
-                'content': material[2],
-                'source_citation': material[3],
-                'generated_date': str(material[4]),
-                'topic_name': material[5]
-            })
+        materials = cursor.fetchall() or []
+        materials_list = [
+            delivery.material_row_to_dict(m, extra_cols, has_topic_id=True)
+            for m in materials
+        ]
         
         cursor.close()
         conn.close()
@@ -1382,7 +2265,7 @@ def admin_login():
         conn = get_db_connection()
         cursor = conn.cursor()
         cursor.execute(
-            "SELECT user_id, full_name, email, role, password FROM users WHERE email = %s",
+            "SELECT user_id, full_name, email, role, password, is_verified FROM users WHERE email = %s",
             (email,)
         )
         user = cursor.fetchone()
@@ -1393,6 +2276,7 @@ def admin_login():
             return jsonify({"error": "Invalid credentials"}), 401
         
         stored_password = user[4]
+        is_verified = bool(user[5]) if len(user) > 5 else True
         
         # Check bcrypt hash first, then fall back to plain text for migration
         password_valid = False
@@ -1413,6 +2297,11 @@ def admin_login():
             cursor.close()
             conn.close()
             return jsonify({"error": "Invalid credentials"}), 401
+        
+        if not is_verified:
+            cursor.close()
+            conn.close()
+            return jsonify({"error": "Admin email not verified.", "requires_verification": True}), 403
         
         # Check if user has admin role
         if user[3] != 'admin':
@@ -1501,7 +2390,7 @@ def admin_get_users_by_role(role):
         elif role == 'teacher':
             cursor.execute("""
                 SELECT u.user_id, u.full_name, u.email, u.role, u.created_at,
-                       t.qualification, t.subject
+                       t.qualification, t.subject, t.grade_level
                 FROM users u
                 LEFT JOIN teachers t ON u.user_id = t.user_id
                 WHERE u.role = 'teacher'
@@ -1517,7 +2406,9 @@ def admin_get_users_by_role(role):
                     'role': user[3],
                     'created_at': str(user[4]) if user[4] else None,
                     'qualification': user[5],
-                    'subject': user[6]
+                    'subject': user[6],
+                    'grade_level': user[7],
+                    'assigned_grade': user[7],
                 })
         elif role == 'family':
             cursor.execute("""
@@ -1566,12 +2457,8 @@ def admin_get_users_by_role(role):
         return jsonify({"users": [], "error": str(e)}), 200
 
 @app.route('/api/admin/user', methods=['POST'])
-@jwt_required(optional=True)
 def admin_create_user():
     try:
-        identity = get_jwt_identity()
-        if identity and identity.get('role') != 'admin':
-            return jsonify({"error": "Access denied"}), 403
         data = request.get_json()
         full_name = data.get('full_name')
         email = data.get('email')
@@ -1590,8 +2477,11 @@ def admin_create_user():
         if role not in ['student', 'teacher', 'family', 'admin']:
             return jsonify({"error": "Invalid role"}), 400
         
-        # Hash the password using bcrypt
-        hashed_password = bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
+        # Hash the password using bcrypt when available
+        if BCRYPT_AVAILABLE and bcrypt:
+            hashed_password = bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
+        else:
+            hashed_password = password
         
         conn = get_db_connection()
         cursor = conn.cursor()
@@ -1603,9 +2493,16 @@ def admin_create_user():
             conn.close()
             return jsonify({"error": "Email already registered"}), 400
         
-        # Insert user with hashed password
+        # Admin-created accounts must still use strong passwords
+        is_strong, pw_errors, _ = validate_strong_password(password)
+        if not is_strong:
+            cursor.close()
+            conn.close()
+            return jsonify({"error": "Weak password", "errors": pw_errors}), 400
+        
+        # Insert user (admin created = auto verified)
         cursor.execute(
-            "INSERT INTO users (full_name, email, password, role, created_at) VALUES (%s, %s, %s, %s, NOW())",
+            "INSERT INTO users (full_name, email, password, role, is_verified, created_at) VALUES (%s, %s, %s, %s, TRUE, NOW())",
             (full_name, email, hashed_password, role)
         )
         user_id = cursor.lastrowid
@@ -1630,14 +2527,22 @@ def admin_create_user():
                 (user_id, grade_level, section)
             )
         elif role == 'teacher':
+            teacher_grade = parse_teacher_grade(
+                data.get('teacher_grade_level') or data.get('assigned_grade') or grade_level
+            )
             if not qualification or not subject:
                 conn.rollback()
                 cursor.close()
                 conn.close()
                 return jsonify({"error": "Qualification and subject are required for teachers"}), 400
+            if teacher_grade is None:
+                conn.rollback()
+                cursor.close()
+                conn.close()
+                return jsonify({"error": "Assigned grade (9, 10, 11, or 12) is required for teachers"}), 400
             cursor.execute(
-                "INSERT INTO teachers (user_id, qualification, subject) VALUES (%s, %s, %s)",
-                (user_id, qualification, subject)
+                "INSERT INTO teachers (user_id, qualification, subject, grade_level) VALUES (%s, %s, %s, %s)",
+                (user_id, qualification, subject, teacher_grade)
             )
         elif role == 'family':
             if not student_ids:
@@ -1647,16 +2552,19 @@ def admin_create_user():
                 return jsonify({"error": "At least one student ID is required for family accounts"}), 400
             
             for student_id in student_ids:
-                cursor.execute("SELECT user_id FROM students WHERE user_id = %s", (student_id,))
-                if not cursor.fetchone():
+                # incoming student_id is users.user_id; family.student_id stores students.student_id
+                cursor.execute("SELECT student_id FROM students WHERE user_id = %s", (student_id,))
+                row = cursor.fetchone()
+                if not row:
                     conn.rollback()
                     cursor.close()
                     conn.close()
                     return jsonify({"error": f"Student with ID {student_id} not found"}), 400
+                student_pk_id = int(row[0])
                 
                 cursor.execute(
                     "INSERT INTO family (user_id, student_id, relationship) VALUES (%s, %s, %s)",
-                    (user_id, student_id, relationship)
+                    (user_id, student_pk_id, relationship)
                 )
         elif role == 'admin':
             cursor.execute(
@@ -1677,12 +2585,8 @@ def admin_create_user():
         return jsonify({"error": str(e)}), 500
 
 @app.route('/api/admin/user/<int:user_id>', methods=['PUT'])
-@jwt_required(optional=True)
 def admin_update_user(user_id):
     try:
-        identity = get_jwt_identity()
-        if identity and identity.get('role') != 'admin':
-            return jsonify({"error": "Access denied"}), 403
         data = request.get_json()
         full_name = data.get('full_name')
         email = data.get('email')
@@ -1716,8 +2620,10 @@ def admin_update_user(user_id):
         
         # Update user
         if password:
-            # Hash the password using bcrypt
-            hashed_password = bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
+            if BCRYPT_AVAILABLE and bcrypt:
+                hashed_password = bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
+            else:
+                hashed_password = password
             cursor.execute(
                 "UPDATE users SET full_name = %s, email = %s, password = %s, role = %s WHERE user_id = %s",
                 (full_name, email, hashed_password, role, user_id)
@@ -1762,17 +2668,31 @@ def admin_update_user(user_id):
                         (user_id, grade_level, section)
                     )
         elif role == 'teacher':
+            teacher_grade = parse_teacher_grade(
+                data.get('teacher_grade_level') or data.get('assigned_grade') or grade_level
+            )
             if qualification and subject:
                 cursor.execute("SELECT user_id FROM teachers WHERE user_id = %s", (user_id,))
                 if cursor.fetchone():
-                    cursor.execute(
-                        "UPDATE teachers SET qualification = %s, subject = %s WHERE user_id = %s",
-                        (qualification, subject, user_id)
-                    )
+                    if teacher_grade is not None:
+                        cursor.execute(
+                            "UPDATE teachers SET qualification = %s, subject = %s, grade_level = %s WHERE user_id = %s",
+                            (qualification, subject, teacher_grade, user_id)
+                        )
+                    else:
+                        cursor.execute(
+                            "UPDATE teachers SET qualification = %s, subject = %s WHERE user_id = %s",
+                            (qualification, subject, user_id)
+                        )
                 else:
+                    if teacher_grade is None:
+                        conn.rollback()
+                        cursor.close()
+                        conn.close()
+                        return jsonify({"error": "Assigned grade (9, 10, 11, or 12) is required for teachers"}), 400
                     cursor.execute(
-                        "INSERT INTO teachers (user_id, qualification, subject) VALUES (%s, %s, %s)",
-                        (user_id, qualification, subject)
+                        "INSERT INTO teachers (user_id, qualification, subject, grade_level) VALUES (%s, %s, %s, %s)",
+                        (user_id, qualification, subject, teacher_grade)
                     )
         elif role == 'admin':
             cursor.execute("SELECT user_id FROM administrator WHERE user_id = %s", (user_id,))
@@ -1792,12 +2712,8 @@ def admin_update_user(user_id):
         return jsonify({"error": str(e)}), 500
 
 @app.route('/api/admin/user/<int:user_id>', methods=['DELETE'])
-@jwt_required(optional=True)
 def admin_delete_user(user_id):
     try:
-        identity = get_jwt_identity()
-        if identity and identity.get('role') != 'admin':
-            return jsonify({"error": "Access denied"}), 403
         conn = get_db_connection()
         cursor = conn.cursor()
         
@@ -2116,15 +3032,32 @@ def get_progress_map(student_id):
 def get_teacher_mastery_overview():
     """Class-wide mastery summary showing % of students who mastered each topic."""
     try:
+        grade_filter = parse_teacher_grade(request.args.get('grade_level'))
         conn = get_db_connection()
         cursor = conn.cursor()
         
-        # Get all topics
-        cursor.execute("SELECT topic_id, topic_name, grade_level FROM topics ORDER BY grade_level, topic_id")
+        # Get topics (optionally scoped to teacher grade)
+        if grade_filter is not None:
+            cursor.execute(
+                "SELECT topic_id, topic_name, grade_level FROM topics WHERE grade_level = %s ORDER BY topic_id",
+                (grade_filter,),
+            )
+        else:
+            cursor.execute("SELECT topic_id, topic_name, grade_level FROM topics ORDER BY grade_level, topic_id")
         topics = cursor.fetchall() or []
         
-        # Get total students count
-        cursor.execute("SELECT COUNT(*) FROM users WHERE role = 'student'")
+        # Total students in scope
+        if grade_filter is not None:
+            cursor.execute(
+                """
+                SELECT COUNT(*) FROM users u
+                JOIN students s ON u.user_id = s.user_id
+                WHERE u.role = 'student' AND s.grade_level = %s
+                """,
+                (grade_filter,),
+            )
+        else:
+            cursor.execute("SELECT COUNT(*) FROM users WHERE role = 'student'")
         result = cursor.fetchone()
         total_students = result[0] if result else 0
         
@@ -2138,16 +3071,21 @@ def get_teacher_mastery_overview():
         for topic in topics:
             topic_id = topic[0]
             
-            mastered_count = count_students_mastered_topic(cursor, topic_id)
+            mastered_count = count_students_mastered_topic(cursor, topic_id, grade_filter)
             attempted_count = 0
             try:
+                grade_clause = ""
+                params = [topic_id]
+                if grade_filter is not None:
+                    grade_clause = " AND s_qa.user_id IN (SELECT user_id FROM students WHERE grade_level = %s)"
+                    params.append(grade_filter)
                 cursor.execute(f"""
                     SELECT COUNT(DISTINCT s_qa.user_id)
                     FROM quiz_attempt qa
                     JOIN quizzes q ON qa.quiz_id = q.quiz_id
                     {QUIZ_STUDENT_JOIN}
-                    WHERE q.topic_id = %s
-                """, (topic_id,))
+                    WHERE q.topic_id = %s{grade_clause}
+                """, tuple(params))
                 result = cursor.fetchone()
                 attempted_count = result[0] if result else 0
             except Exception:
@@ -2155,13 +3093,20 @@ def get_teacher_mastery_overview():
             
             mastery_pct = round((mastered_count / total_students) * 100, 1) if total_students > 0 else 0
             
-            struggling_students = fetch_struggling_students_for_topic(cursor, topic_id)
+            struggling_students = fetch_struggling_students_for_topic(cursor, topic_id, grade_filter)
             
             not_started_students = []
             try:
+                grade_join = ""
+                params = [topic_id]
+                if grade_filter is not None:
+                    grade_join = (
+                        " JOIN students s_ns ON u.user_id = s_ns.user_id AND s_ns.grade_level = %s"
+                    )
+                    params = [grade_filter, topic_id]
                 cursor.execute(f"""
                     SELECT u.user_id, u.full_name
-                    FROM users u
+                    FROM users u{grade_join}
                     WHERE u.role = 'student'
                     AND u.user_id NOT IN (
                         SELECT DISTINCT s_qa.user_id
@@ -2170,7 +3115,7 @@ def get_teacher_mastery_overview():
                         {QUIZ_STUDENT_JOIN}
                         WHERE q.topic_id = %s
                     )
-                """, (topic_id,))
+                """, tuple(params))
                 for s in cursor.fetchall() or []:
                     prereqs_met = check_prerequisites_met(cursor, s[0], topic_id)
                     if not prereqs_met:
@@ -2195,7 +3140,11 @@ def get_teacher_mastery_overview():
         
         cursor.close()
         conn.close()
-        return jsonify({"overview": overview, "total_students": total_students})
+        return jsonify({
+            "overview": overview,
+            "total_students": total_students,
+            "grade_level": grade_filter,
+        })
     except Exception as e:
         print(f"Error in /api/teacher/mastery-overview: {e}")
         return jsonify({"error": str(e), "overview": [], "total_students": 0}), 200
@@ -2204,14 +3153,31 @@ def get_teacher_mastery_overview():
 def get_teacher_heatmap():
     """Class-wide gap heatmap showing mastery percentage and student breakdown per topic."""
     try:
+        grade_filter = parse_teacher_grade(request.args.get('grade_level'))
         conn = get_db_connection()
         cursor = conn.cursor()
 
-        cursor.execute("SELECT COUNT(*) FROM users WHERE role = 'student'")
+        if grade_filter is not None:
+            cursor.execute(
+                """
+                SELECT COUNT(*) FROM users u
+                JOIN students s ON u.user_id = s.user_id
+                WHERE u.role = 'student' AND s.grade_level = %s
+                """,
+                (grade_filter,),
+            )
+        else:
+            cursor.execute("SELECT COUNT(*) FROM users WHERE role = 'student'")
         result = cursor.fetchone()
         total_students = result[0] if result else 0 or 0
 
-        cursor.execute("SELECT topic_id, topic_name, grade_level FROM topics ORDER BY grade_level, topic_id")
+        if grade_filter is not None:
+            cursor.execute(
+                "SELECT topic_id, topic_name, grade_level FROM topics WHERE grade_level = %s ORDER BY topic_id",
+                (grade_filter,),
+            )
+        else:
+            cursor.execute("SELECT topic_id, topic_name, grade_level FROM topics ORDER BY grade_level, topic_id")
         topics = cursor.fetchall() or []
 
         from gap_utils import (
@@ -2225,10 +3191,10 @@ def get_teacher_heatmap():
         for topic in topics:
             topic_id = topic[0]
 
-            mastered_count = count_students_mastered_topic(cursor, topic_id)
-            struggling_count = count_students_struggling_topic(cursor, topic_id)
-            untouched_count = count_students_untouched_topic(cursor, topic_id)
-            struggling_students = fetch_struggling_students_for_topic(cursor, topic_id)
+            mastered_count = count_students_mastered_topic(cursor, topic_id, grade_filter)
+            struggling_count = count_students_struggling_topic(cursor, topic_id, grade_filter)
+            untouched_count = count_students_untouched_topic(cursor, topic_id, grade_filter)
+            struggling_students = fetch_struggling_students_for_topic(cursor, topic_id, grade_filter)
 
             mastery_pct = round((mastered_count / total_students) * 100) if total_students > 0 else 0
 
@@ -2255,7 +3221,11 @@ def get_teacher_heatmap():
 
         cursor.close()
         conn.close()
-        return jsonify({"heatmap": heatmap, "total_students": total_students})
+        return jsonify({
+            "heatmap": heatmap,
+            "total_students": total_students,
+            "grade_level": grade_filter,
+        })
     except Exception as e:
         print(f"Error in /api/teacher/heatmap: {e}")
         return jsonify({"error": str(e), "heatmap": [], "total_students": 0}), 200
@@ -2395,69 +3365,66 @@ def get_completed_quizzes(student_id):
 
 @app.route('/api/student/materials', methods=['GET'])
 def get_student_materials():
-    """Get approved materials for students."""
+    """Get approved materials assigned to a specific student."""
     try:
         student_id = request.args.get('student_id')
-        
+        if not student_id:
+            return jsonify({"error": "student_id is required", "materials": []}), 400
+        try:
+            student_id = int(student_id)
+        except (TypeError, ValueError):
+            return jsonify({"error": "student_id must be a valid integer", "materials": []}), 400
+
+        import material_delivery as delivery
         conn = get_db_connection()
         cursor = conn.cursor()
-        
-        print(f"[DEBUG] get_student_materials called with student_id={student_id}")
-        
-        cursor.execute("SELECT COUNT(*) FROM material WHERE approval_status = 'Approved'")
-        approved_count = cursor.fetchone()[0]
-        print(f"[DEBUG] Approved materials in DB: {approved_count}")
-        
-        select_cols = """
-            m.material_id, m.title, m.content, m.source_citation,
-            m.generated_date, t.topic_name, m.topic_id
-        """
-        try:
-            cursor.execute("SHOW COLUMNS FROM material LIKE 'source_file'")
-            if cursor.fetchone():
-                select_cols = """
-                    m.material_id, m.title, m.content, m.source_citation,
-                    m.generated_date, t.topic_name, m.topic_id,
-                    m.source_file, m.source_page, m.source_grade, m.section_title
-                """
-        except Exception:
-            pass
+        delivery.ensure_student_materials_table(cursor)
 
+        extra_cols = delivery.existing_material_columns(cursor)
+        select_cols = delivery.build_material_select('m', 't', include_topic_id=True)
+        select_cols += [f'm.{c}' for c in extra_cols]
+        select_sql = ', '.join(select_cols)
+
+        user_id = delivery.resolve_student_user_id(cursor, student_id)
+        if not user_id:
+            cursor.close()
+            conn.close()
+            return jsonify({"materials": []})
+
+        sm_join = delivery.student_materials_filter_by_user_sql('%s')
         cursor.execute(f"""
-            SELECT {select_cols}
+            SELECT {select_sql}
             FROM material m
             LEFT JOIN topics t ON m.topic_id = t.topic_id
+            {sm_join}
             WHERE m.approval_status = 'Approved'
             ORDER BY m.generated_date DESC
-        """)
+        """, (user_id,))
         
         materials = cursor.fetchall() or []
-        print(f"[DEBUG] Materials fetched: {len(materials)}")
-        
-        materials_list = []
-        for material in materials:
-            item = {
-                'material_id': material[0],
-                'title': material[1],
-                'content': material[2],
-                'source_citation': material[3],
-                'generated_date': str(material[4]) if material[4] else '',
-                'topic_name': material[5] if material[5] else '',
-                'topic_id': material[6],
-            }
-            if len(material) > 7:
-                item['source_file'] = material[7]
-                item['source_page'] = material[8]
-                item['source_grade'] = material[9]
-                item['section_title'] = material[10]
-            materials_list.append(item)
+        materials_list = [
+            delivery.material_row_to_dict(m, extra_cols, has_topic_id=True)
+            for m in materials
+        ]
         
         cursor.close()
         conn.close()
         return jsonify({"materials": materials_list})
     except Exception as e:
         print(f"Error in /api/student/materials: {e}")
-        return jsonify({"materials": []}), 200
+        return jsonify({"materials": []}), 500
+
+@app.route('/api/curriculum/index-status', methods=['GET'])
+def curriculum_index_status():
+    """Report which textbooks are indexed in FAISS (for debugging missing Grade 11/12)."""
+    try:
+        import rag_service as rag
+        status = rag.get_indexed_textbooks()
+        status['faiss_available'] = rag.faiss_available()
+        return jsonify(status)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
 
 @app.route('/api/curriculum/search', methods=['GET', 'POST'])
 def search_curriculum():
@@ -2530,13 +3497,52 @@ def generate_practice_material():
         if not student_id:
             return jsonify({"error": "student_id is required"}), 400
 
+        import material_delivery as delivery
+
         helpers = _material_helpers
         conn = get_db_connection()
         cursor = conn.cursor()
 
-        grade_level = helpers['student_grade'](cursor, student_id) or 10
+        student_user_id = delivery.resolve_student_user_id(cursor, student_id)
+        if not student_user_id:
+            cursor.close()
+            conn.close()
+            return jsonify({"error": "Student not found"}), 404
 
-        if not skip_dedup and helpers['dedup_recent'](cursor, student_id, topic_name):
+        grade_level = helpers['student_grade'](cursor, student_user_id) or 10
+
+        teacher_grade = parse_teacher_grade(data.get('teacher_grade_level'))
+        if teacher_grade is None and teacher_id:
+            teacher_grade = get_teacher_grade(cursor, teacher_id)
+        if teacher_grade is not None and not student_in_grade(cursor, student_user_id, teacher_grade):
+            cursor.close()
+            conn.close()
+            return jsonify({
+                "error": f"You can only generate materials for Grade {teacher_grade} students",
+            }), 403
+
+        if not skip_dedup and helpers['dedup_recent'](cursor, student_user_id, topic_name):
+            pending_id = delivery.find_pending_material_for_student_topic(
+                cursor, student_user_id, topic_name
+            )
+            if pending_id:
+                delivery.set_material_assignments(
+                    cursor, pending_id, [student_user_id], grade_level=grade_level
+                )
+                delivery.link_generation_history_to_material(
+                    cursor, pending_id, student_user_id, topic_name
+                )
+                conn.commit()
+                cursor.close()
+                conn.close()
+                return jsonify({
+                    "material_id": pending_id,
+                    "duplicate": True,
+                    "message": (
+                        "A pending material for this topic already exists and has been "
+                        "linked to the student. You can approve it now."
+                    ),
+                }), 200
             cursor.close()
             conn.close()
             return jsonify({
@@ -2556,9 +3562,25 @@ def generate_practice_material():
         material_id = helpers['insert_material'](
             cursor, topic_id, f"Practice: {topic_name}", html, cite, teacher_id
         )
-        helpers['record_generation'](
-            cursor, teacher_id, student_id, topic_name, grade_level, difficulty
+        assigned_count = delivery.set_material_assignments(
+            cursor, material_id, [student_user_id], grade_level=grade_level
         )
+        helpers['record_generation'](
+            cursor, teacher_id, student_user_id, topic_name, grade_level, difficulty,
+            material_id=material_id,
+        )
+        delivery.link_generation_history_to_material(
+            cursor, material_id, student_user_id, topic_name
+        )
+        if not assigned_count:
+            cursor.close()
+            conn.close()
+            return jsonify({
+                "error": (
+                    "Material was created but could not be linked to this student. "
+                    "Ensure the student has a complete profile in the class roster."
+                ),
+            }), 500
         conn.commit()
         cursor.close()
         conn.close()
@@ -2613,6 +3635,14 @@ def search_curriculum_faiss():
 # Advanced RAG routes (quiz AI, assistant, batch, analytics, etc.)
 from material_routes import register_routes as _register_material_routes
 _material_helpers = _register_material_routes(app, get_db_connection)
+
+# Peer-to-peer student questions (broadcast questions, private answers)
+from peer_routes import register_routes as _register_peer_routes
+_register_peer_routes(app, get_db_connection)
+
+# File uploads (peer attachments, quiz question images)
+from upload_routes import register_routes as _register_upload_routes
+_register_upload_routes(app, get_db_connection)
 
 if __name__ == '__main__':
     app.run(debug=True)

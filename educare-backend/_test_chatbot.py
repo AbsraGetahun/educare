@@ -144,7 +144,7 @@ chk(f'what-can-you-do returns capabilities', "Algebra" in r['answer'] or "Limits
 
 # Non-math question
 r = generate_math_answer('what is the capital of France', grade_level=9)
-chk(f'non-math returns scope msg', 'only help with' in r['answer'] or 'Grade 9-12' in r['answer'])
+chk(f'non-math returns scope msg', 'out of my scope' in r['answer'].lower() or 'under development' in r['answer'].lower())
 chk(f'non-math source empty', r['source_file'] == '')
 
 # Math question (may or may not find FAISS content)
@@ -156,7 +156,22 @@ print(f'  solve-2x+5 confidence={r["confidence"]!r} topic={r["topic"]!r} source=
 
 r = generate_math_answer('find the derivative of x^2', grade_level=11)
 chk(f'derivative has answer', len(r['answer']) >= 20)
+chk(f'derivative x^2 gives 2x', '2x' in r['answer'].replace(' ', '').lower() or '2*x' in r['answer'].lower())
 print(f'  deriv confidence={r["confidence"]!r} topic={r["topic"]!r}')
+
+r = generate_math_answer('find the derivative of 3x^2 + 2x - 5', grade_level=12)
+chk(f'derivative poly has answer', 'Answer:' in r['answer'])
+chk(f'derivative poly has 6x', '6x' in r['answer'].replace(' ', '').lower())
+
+r = generate_math_answer('lim(x->2) (x^2-4)/(x-2)', grade_level=12)
+chk(f'limit rational has answer', 'Answer:' in r['answer'])
+chk(f'limit rational is 4', '4' in r['answer'])
+
+r = generate_math_answer('lim(x->0) sin(x)/x', grade_level=12)
+chk(f'limit sin/x is 1', 'Answer: 1' in r['answer'] or 'Answer:1' in r['answer'].replace(' ', ''))
+
+r = generate_math_answer('find lim(x->0) sin(3x)/(2x)', grade_level=12)
+chk(f'limit sin3x/2x', '1.5' in r['answer'] or '3/2' in r['answer'])
 
 # Age word problem
 r = generate_math_answer('John is twice as old as Mary. In 5 years sum is 40.', grade_level=9)

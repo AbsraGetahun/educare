@@ -50,6 +50,11 @@ export const familyRegister = async (fullName, email, password, studentEmail, re
   return response.data;
 };
 
+export const listLinkableStudents = async () => {
+  const response = await api.get('/api/family/students/list');
+  return response.data;
+};
+
 // Quiz APIs
 export const getQuizzes = async () => {
   try {
@@ -113,8 +118,18 @@ export const getFamilyStudentRecommendations = async (studentId) => {
 
 export const getStudentReport = async (studentId) => {
   const response = await api.get(`/api/family/student/${studentId}/report`, {
-    responseType: 'blob'
+    responseType: 'blob',
   });
+  const contentType = response.headers['content-type'] || '';
+  if (contentType.includes('application/json')) {
+    const text = await response.data.text();
+    let message = 'Failed to generate report';
+    try {
+      const err = JSON.parse(text);
+      message = err.error || message;
+    } catch (_) { /* use default */ }
+    throw new Error(message);
+  }
   return response.data;
 };
 
@@ -233,8 +248,12 @@ export const searchCurriculum = async (query) => {
 };
 
 // Teacher Materials APIs
-export const getStudents = async () => {
-  const response = await api.get('/api/students');
+export const getStudents = async (gradeLevel) => {
+  const params = {};
+  if (gradeLevel != null && gradeLevel !== '') {
+    params.grade_level = gradeLevel;
+  }
+  const response = await api.get('/api/students', { params });
   return response.data;
 };
 
@@ -243,8 +262,16 @@ export const getPendingMaterials = async () => {
   return response.data;
 };
 
-export const approveMaterial = async (materialId) => {
-  const response = await api.post(`/api/materials/approve/${materialId}`);
+export const assignMaterialToStudent = async (materialId, studentId) => {
+  const response = await api.post(`/api/materials/${materialId}/assign`, {
+    student_id: studentId,
+  });
+  return response.data;
+};
+
+export const approveMaterial = async (materialId, studentId = null) => {
+  const payload = studentId ? { student_id: studentId } : {};
+  const response = await api.post(`/api/materials/approve/${materialId}`, payload);
   return response.data;
 };
 
@@ -256,7 +283,9 @@ export const rejectMaterial = async (materialId) => {
 // Student Materials APIs
 export const getApprovedMaterials = async (studentId) => {
   try {
-    const response = await api.get('/api/student/materials');
+    const response = await api.get('/api/student/materials', {
+      params: { student_id: studentId },
+    });
     return response.data;
   } catch (err) {
     console.error('Error fetching materials:', err);
@@ -326,35 +355,60 @@ export const getProgressMap = async (studentId) => {
 };
 
 // Teacher Mastery Overview API
-export const getTeacherMasteryOverview = async () => {
-  const response = await api.get('/api/teacher/mastery-overview');
+export const getTeacherMasteryOverview = async (gradeLevel) => {
+  const params = {};
+  if (gradeLevel != null && gradeLevel !== '') {
+    params.grade_level = gradeLevel;
+  }
+  const response = await api.get('/api/teacher/mastery-overview', { params });
   return response.data;
 };
 
 // Teacher Heatmap API
-export const getHeatmap = async () => {
-  const response = await api.get('/api/teacher/heatmap');
+export const getHeatmap = async (gradeLevel) => {
+  const params = {};
+  if (gradeLevel != null && gradeLevel !== '') {
+    params.grade_level = gradeLevel;
+  }
+  const response = await api.get('/api/teacher/heatmap', { params });
   return response.data;
 };
 
 // RAG Material Generation API
-export const generatePracticeMaterial = async (topicName, studentId, difficulty = 'medium', skipDedup = false) => {
-  const response = await api.post('/api/materials/generate', {
+export const generatePracticeMaterial = async (topicName, studentId, difficulty = 'medium', skipDedup = false, teacherId, teacherGrade) => {
+  const payload = {
     topic_name: topicName,
     student_id: studentId,
     difficulty,
-    skip_dedup: skipDedup
-  });
+    skip_dedup: skipDedup,
+  };
+  if (teacherId) payload.teacher_id = teacherId;
+  if (teacherGrade != null && teacherGrade !== '') payload.teacher_grade_level = teacherGrade;
+  const response = await api.post('/api/materials/generate', payload);
   return response.data;
 };
 
-// Topic-based Material Generation API (no student_id required)
-export const generateMaterialByTopic = async (topicName, gradeLevel, difficulty = 'medium') => {
-  const response = await api.post('/api/materials/generate-by-topic', {
+// Topic-based Material Generation API
+export const generateMaterialByTopic = async (
+  topicName,
+  gradeLevel,
+  difficulty = 'medium',
+  teacherId,
+  studentId = null,
+  { forAllStudents = false } = {}
+) => {
+  const payload = {
     topic_name: topicName,
     grade_level: gradeLevel,
-    difficulty
-  });
+    difficulty,
+  };
+  if (teacherId) payload.teacher_id = teacherId;
+  if (forAllStudents) {
+    payload.for_all_students = true;
+  } else if (studentId) {
+    payload.student_id = studentId;
+  }
+  const response = await api.post('/api/materials/generate-by-topic', payload);
   return response.data;
 };
 
@@ -399,8 +453,11 @@ export const generateBatchMaterials = async (data) => {
 };
 
 // ── New: Material Analytics ───────────────────────────────────────
-export const getMaterialsAnalytics = async () => {
-  const response = await api.get('/api/materials/analytics');
+export const getMaterialsAnalytics = async (gradeLevel, teacherId) => {
+  const params = {};
+  if (gradeLevel != null && gradeLevel !== '') params.grade_level = gradeLevel;
+  if (teacherId) params.teacher_id = teacherId;
+  const response = await api.get('/api/materials/analytics', { params });
   return response.data;
 };
 
@@ -417,6 +474,95 @@ export const rateMaterial = async (materialId, rating, studentId) => {
   const response = await api.post(`/api/materials/${materialId}/rate`, {
     rating,
     student_id: studentId,
+  });
+  return response.data;
+};
+
+// ── File uploads ────────────────────────────────────────────────────
+export const uploadFile = async (file, context = 'peer') => {
+  const form = new FormData();
+  form.append('file', file);
+  form.append('context', context);
+  const response = await api.post('/api/upload', form, {
+    headers: { 'Content-Type': 'multipart/form-data' },
+  });
+  return response.data;
+};
+
+// ── Peer-to-peer student questions ────────────────────────────────
+export const postPeerQuestion = async (studentId, questionText, attachments = []) => {
+  const response = await api.post('/api/peer/questions', {
+    student_id: studentId,
+    question_text: questionText,
+    attachments,
+  });
+  return response.data;
+};
+
+export const getPeerQuestionFeed = async (studentId) => {
+  const response = await api.get('/api/peer/questions', {
+    params: { student_id: studentId },
+  });
+  return response.data;
+};
+
+export const getMyPeerQuestions = async (studentId) => {
+  const response = await api.get('/api/peer/my-questions', {
+    params: { student_id: studentId },
+  });
+  return response.data;
+};
+
+export const postPeerAnswer = async (questionId, studentId, answerText, attachments = []) => {
+  const response = await api.post(`/api/peer/questions/${questionId}/answers`, {
+    student_id: studentId,
+    answer_text: answerText,
+    attachments,
+  });
+  return response.data;
+};
+
+// ===== NEW: Email Verification + Auth Flow =====
+export const verifyEmail = async (token) => {
+  const response = await api.get(`/api/verify-email?token=${encodeURIComponent(token)}`);
+  return response.data;
+};
+
+export const forgotPassword = async (email) => {
+  const response = await api.post('/api/forgot-password', { email });
+  return response.data;
+};
+
+export const resetPassword = async (email, otp, new_password) => {
+  const response = await api.post('/api/reset-password', { email, otp, new_password });
+  return response.data;
+};
+
+// ===== NEW: Profile APIs =====
+export const getProfile = async () => {
+  const response = await api.get('/api/profile');
+  return response.data;
+};
+
+export const updateProfile = async (full_name, email) => {
+  const response = await api.put('/api/profile', { full_name, email });
+  return response.data;
+};
+
+export const changePassword = async (old_password, new_password, confirm_password) => {
+  const response = await api.put('/api/profile/password', {
+    old_password,
+    new_password,
+    confirm_password,
+  });
+  return response.data;
+};
+
+export const uploadProfilePicture = async (file) => {
+  const form = new FormData();
+  form.append('file', file);
+  const response = await api.post('/api/profile/picture', form, {
+    headers: { 'Content-Type': 'multipart/form-data' },
   });
   return response.data;
 };

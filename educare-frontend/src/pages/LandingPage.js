@@ -1,6 +1,6 @@
 import React from 'react';
 import { Link } from 'react-router-dom';
-import { FaGraduationCap, FaChalkboardTeacher, FaUsers, FaShieldAlt, FaBookOpen, FaChartLine, FaRocket, FaBrain, FaCheckCircle } from 'react-icons/fa';
+import { FaGraduationCap, FaChalkboardTeacher, FaUsers, FaShieldAlt, FaBookOpen, FaChartLine, FaRocket, FaBrain } from 'react-icons/fa';
 
 function LandingPage() {
   const roles = [
@@ -104,7 +104,6 @@ function LandingPage() {
               href="#roles"
               className="hidden sm:inline-flex items-center gap-2 bg-[#2563eb] text-white px-5 py-2.5 rounded-xl text-sm font-semibold hover:bg-[#1d4ed8] transition-all shadow-md shadow-blue-200 hover:shadow-lg hover:shadow-blue-300"
             >
-              <FaRocket className="w-4 h-4" />
               Get Started
             </a>
           </div>
@@ -121,8 +120,7 @@ function LandingPage() {
         <div className="relative max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-20 md:py-28">
           <div className="text-center max-w-4xl mx-auto">
             <div className="inline-flex items-center gap-2 bg-white border border-blue-100 text-[#2563eb] px-4 py-2 rounded-full text-sm font-medium mb-8 shadow-sm">
-              <FaRocket className="w-3.5 h-3.5" />
-              AI-Powered Learning Platform
+                AI-Powered Learning Platform
             </div>
             <h2 className="text-4xl md:text-5xl lg:text-6xl font-extrabold text-gray-900 mb-6 leading-tight tracking-tight">
               AI-Powered Mathematics
@@ -199,7 +197,7 @@ function LandingPage() {
         </div>
       </section>
 
-      {/* Features Section */}
+      {/* Features Section - Only, no Stats */}
       <section id="features" className="py-20 px-4 sm:px-6 lg:px-8 bg-white">
         <div className="max-w-7xl mx-auto">
           <div className="text-center mb-14">
@@ -229,79 +227,6 @@ function LandingPage() {
                 <p className="text-gray-500 leading-relaxed">{feature.description}</p>
               </div>
             ))}
-          </div>
-
-          {/* Stats */}
-          <div className="mt-16 bg-gradient-to-r from-[#2563eb] to-[#1d4ed8] rounded-3xl p-10 md:p-14 shadow-xl shadow-blue-200">
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-8 text-center text-white">
-              <div>
-                <div className="text-3xl md:text-4xl font-extrabold mb-1">1000+</div>
-                <div className="text-blue-200 text-sm font-medium">Active Students</div>
-              </div>
-              <div>
-                <div className="text-3xl md:text-4xl font-extrabold mb-1">50+</div>
-                <div className="text-blue-200 text-sm font-medium">Expert Teachers</div>
-              </div>
-              <div>
-                <div className="text-3xl md:text-4xl font-extrabold mb-1">500+</div>
-                <div className="text-blue-200 text-sm font-medium">Quiz Questions</div>
-              </div>
-              <div>
-                <div className="text-3xl md:text-4xl font-extrabold mb-1">95%</div>
-                <div className="text-blue-200 text-sm font-medium">Satisfaction Rate</div>
-              </div>
-            </div>
-          </div>
-        </div>
-      </section>
-
-      {/* Benefits Section */}
-      <section className="py-20 px-4 sm:px-6 lg:px-8 bg-[#f3f4f6]">
-        <div className="max-w-7xl mx-auto">
-          <div className="grid md:grid-cols-2 gap-12 items-center">
-            <div>
-              <div className="inline-flex items-center gap-2 bg-white border border-gray-200 text-gray-600 px-4 py-2 rounded-full text-sm font-medium mb-6 shadow-sm">
-                Built for Ethiopia
-              </div>
-              <h3 className="text-3xl md:text-4xl font-extrabold text-gray-900 mb-6 tracking-tight">
-                Designed for Your Success
-              </h3>
-              <p className="text-gray-500 text-lg mb-8 leading-relaxed">
-                EDUCARE is tailored specifically for Ethiopian secondary school students, aligning with the national mathematics curriculum to ensure relevant and effective learning.
-              </p>
-              <ul className="space-y-4">
-                {[
-                  'Curriculum-aligned quiz content',
-                  'Real-time progress tracking',
-                  'Parent and teacher collaboration',
-                  'AI-powered personalized learning paths',
-                ].map((item, i) => (
-                  <li key={i} className="flex items-center gap-3">
-                    <div className="w-6 h-6 bg-emerald-100 rounded-full flex items-center justify-center flex-shrink-0">
-                      <FaCheckCircle className="w-4 h-4 text-[#10b981]" />
-                    </div>
-                    <span className="text-gray-700 font-medium">{item}</span>
-                  </li>
-                ))}
-              </ul>
-            </div>
-            <div className="bg-white rounded-3xl p-10 shadow-lg border border-gray-100">
-              <div className="grid grid-cols-2 gap-6">
-                {[
-                  { icon: <FaGraduationCap className="w-8 h-8" />, label: 'Students', color: 'text-[#2563eb]', bg: 'bg-blue-50' },
-                  { icon: <FaChalkboardTeacher className="w-8 h-8" />, label: 'Teachers', color: 'text-[#10b981]', bg: 'bg-emerald-50' },
-                  { icon: <FaUsers className="w-8 h-8" />, label: 'Families', color: 'text-[#8b5cf6]', bg: 'bg-violet-50' },
-                  { icon: <FaShieldAlt className="w-8 h-8" />, label: 'Admins', color: 'text-[#6b7280]', bg: 'bg-gray-100' },
-                ].map((item, i) => (
-                  <div key={i} className="text-center p-6 rounded-2xl bg-[#f3f4f6] hover:shadow-md transition-all">
-                    <div className={`${item.bg} w-16 h-16 rounded-2xl flex items-center justify-center ${item.color} mx-auto mb-3`}>
-                      {item.icon}
-                    </div>
-                    <div className="font-semibold text-gray-900">{item.label}</div>
-                  </div>
-                ))}
-              </div>
-            </div>
           </div>
         </div>
       </section>

@@ -1,4 +1,5 @@
 import React from 'react';
+import MathContent from './MathContent';
 
 export function OverviewTab({
   totalStudents,
@@ -60,7 +61,7 @@ export function OverviewTab({
           <div className="flex items-start justify-between flex-wrap gap-4 mb-3">
             <div>
               <span className="text-xs px-2.5 py-1 rounded-full font-bold bg-blue-500/20 text-blue-300 border border-blue-400/20 shadow-inner flex items-center gap-1.5 w-fit mb-2">
-                ⚡ AI Smart Assistant
+                AI Smart Assistant
               </span>
               <h3 className="text-xl font-extrabold text-white flex items-center gap-2">
                 Learning Gap Batch Handout Generator
@@ -637,8 +638,9 @@ export function QuizzesTab({ quizzes, setShowCreateQuiz, setShowAIQuizModal, set
   );
 }
 
-export function ApprovalsTab({ pendingMaterials, handleApproveMaterial, setShowRejectConfirm }) {
+export function ApprovalsTab({ pendingMaterials, students = [], handleApproveMaterial, setShowRejectConfirm }) {
   const [expandedMaterialIds, setExpandedMaterialIds] = React.useState({});
+  const [assignStudentByMaterial, setAssignStudentByMaterial] = React.useState({});
 
   const toggleExpand = (materialId) => {
     setExpandedMaterialIds(prev => ({
@@ -706,6 +708,8 @@ export function ApprovalsTab({ pendingMaterials, handleApproveMaterial, setShowR
             const hasHtml = isHtml(m.content);
             const questions = hasHtml ? parseQuestions(m.content) : [];
             const contextHtml = hasHtml ? getContextHtml(m.content) : '';
+            const hasAssignment = m.assigned_students && m.assigned_students.length > 0;
+            const selectedAssignId = assignStudentByMaterial[m.material_id] || '';
 
             return (
               <div
@@ -734,12 +738,27 @@ export function ApprovalsTab({ pendingMaterials, handleApproveMaterial, setShowR
                             {formatDate(m.generated_date)}
                           </span>
                         )}
-                        {m.source_citation && (
-                          <span className="flex items-center italic text-gray-400 truncate max-w-[250px]" title={m.source_citation}>
+                        {hasAssignment ? (
+                          <span className="px-2 py-0.5 rounded-full font-semibold flex items-center bg-amber-50 text-amber-800" title={m.assigned_students.map((s) => s.full_name).join(', ')}>
+                            <svg className="w-3 h-3 mr-1 flex-shrink-0" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+                              <path strokeLinecap="round" strokeLinejoin="round" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
+                            </svg>
+                            For: {m.assigned_students.length === 1
+                              ? m.assigned_students[0].full_name
+                              : `${m.assigned_students.length} students`}
+                          </span>
+                        ) : (
+                          <span className="px-2 py-0.5 rounded-full font-semibold bg-amber-50 text-amber-800">
+                            Select student below to approve
+                          </span>
+                        )}
+                        {(m.source_citation || m.source_file) && (
+                          <span className="flex items-center italic text-gray-400 truncate max-w-[280px]" title={m.source_citation || m.source_file}>
                             <svg className="w-3 h-3 mr-1 text-gray-400 flex-shrink-0" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
                               <path strokeLinecap="round" strokeLinejoin="round" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
                             </svg>
-                            {m.source_citation}
+                            {m.source_citation || m.source_file}
+                            {m.source_page ? `, p.${m.source_page}` : ''}
                           </span>
                         )}
                       </div>
@@ -769,12 +788,35 @@ export function ApprovalsTab({ pendingMaterials, handleApproveMaterial, setShowR
                         )}
                       </button>
                       
-                      <div className="flex items-center gap-2">
+                      <div className="flex items-center gap-2 flex-wrap justify-end">
+                        {!hasAssignment && students.length > 0 && (
+                          <select
+                            value={selectedAssignId}
+                            onChange={(e) => setAssignStudentByMaterial((prev) => ({
+                              ...prev,
+                              [m.material_id]: e.target.value,
+                            }))}
+                            className="text-xs border border-gray-300 rounded-md px-2 py-1.5 max-w-[160px]"
+                            aria-label="Assign to student"
+                          >
+                            <option value="">Assign to student…</option>
+                            {students.map((s) => (
+                              <option key={s.user_id} value={String(s.user_id)}>
+                                {s.full_name}
+                              </option>
+                            ))}
+                          </select>
+                        )}
                         <button
                           type="button"
-                          onClick={() => handleApproveMaterial(m.material_id)}
-                          className="px-3 py-1.5 text-xs font-bold text-white rounded-md shadow-sm hover:opacity-95 transition"
+                          onClick={() => handleApproveMaterial(
+                            m.material_id,
+                            hasAssignment ? null : (selectedAssignId ? parseInt(selectedAssignId, 10) : null)
+                          )}
+                          disabled={!hasAssignment && !selectedAssignId}
+                          className="px-3 py-1.5 text-xs font-bold text-white rounded-md shadow-sm hover:opacity-95 transition disabled:opacity-50 disabled:cursor-not-allowed"
                           style={{ backgroundColor: '#14b8a6' }}
+                          title={!hasAssignment && !selectedAssignId ? 'Choose which student receives this material' : ''}
                         >
                           Approve
                         </button>
@@ -800,9 +842,9 @@ export function ApprovalsTab({ pendingMaterials, handleApproveMaterial, setShowR
                       <div className="bg-white rounded-lg p-4 border border-gray-100 shadow-xs">
                         <h4 className="text-xs font-bold text-gray-400 uppercase tracking-wider mb-2">Curriculum Context & Explanation</h4>
                         {hasHtml ? (
-                          <div
-                            className="text-sm text-gray-700 leading-relaxed font-sans whitespace-pre-wrap rag-content"
-                            dangerouslySetInnerHTML={{ __html: contextHtml }}
+                          <MathContent
+                            html={contextHtml}
+                            className="text-sm text-gray-700 leading-relaxed font-sans"
                           />
                         ) : (
                           <div className="text-sm text-gray-700 leading-relaxed font-sans whitespace-pre-wrap">

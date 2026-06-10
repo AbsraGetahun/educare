@@ -34,16 +34,53 @@ def _load_faiss():
     return _faiss_cache
 
 
+# Canonical keys used in metadata after embedding (see embed_curriculum.py)
+SOURCE_ALIASES = {
+    'grade-9-mathematics-textbook.pdf': 'grade9_math.pdf',
+    'grade-10-mathematics-textbook.pdf': 'grade10_math.pdf',
+    'grade-11-mathematics-textbook.pdf': 'grade11_math.pdf',
+    'grade-12-mathematics-textbook.pdf': 'grade12_math.pdf',
+    'grade9_mathematics_textbook.pdf': 'grade9_math.pdf',
+    'grade10_mathematics_textbook.pdf': 'grade10_math.pdf',
+    'grade11_mathematics_textbook.pdf': 'grade11_math.pdf',
+    'grade12_mathematics_textbook.pdf': 'grade12_math.pdf',
+}
+
+EXTREME_BOOKS = {
+    'extreme mathematics grade 9&10.pdf',
+    'extreme mathematics grade 11&12.pdf',
+}
+
+GRADE_TEXTBOOKS = {
+    'grade9_math.pdf',
+    'grade10_math.pdf',
+    'grade11_math.pdf',
+    'grade12_math.pdf',
+}
+
+
+def normalize_source_key(source: str) -> str:
+    """Map any PDF filename variant to a canonical lowercase key."""
+    if not source:
+        return ''
+    key = os.path.basename(source).lower().strip()
+    return SOURCE_ALIASES.get(key, key)
+
+
 def parse_grades_from_filename(filename: str):
-    lower = filename.lower()
+    lower = os.path.basename(filename).lower()
+    canonical = normalize_source_key(lower)
+    if canonical in GRADE_TEXTBOOKS:
+        return [int(canonical.replace('grade', '').replace('_math.pdf', ''))]
     if '9&10' in lower or '9 and 10' in lower or '9& 10' in lower:
         return [9, 10]
     if '11&12' in lower or '11 and 12' in lower or '11& 12' in lower:
         return [11, 12]
+    compact = lower.replace(' ', '').replace('_', '').replace('-', '')
     for key, grade in [('grade12', 12), ('grade11', 11), ('grade10', 10), ('grade9', 9)]:
-        if key in lower.replace(' ', '').replace('_', ''):
+        if key in compact:
             return [grade]
-    m = re.search(r'grade\s*(\d+)', lower)
+    m = re.search(r'grade[-\s]*(\d+)', lower)
     if m:
         return [int(m.group(1))]
     return []
@@ -58,13 +95,52 @@ def chunk_grade_levels(chunk: dict):
     return []
 
 
-def chunk_matches_grade(chunk: dict, grade_level):
+def chunk_matches_grade(chunk: dict, grade_level, strict=False):
+    """If strict=False, chunks without grade metadata are kept (soft filter for search)."""
     if grade_level is None:
         return True
     levels = chunk_grade_levels(chunk)
     if not levels:
+        return not strict
+    gl = int(grade_level)
+    if gl in levels:
         return True
-    return int(grade_level) in levels
+    if not strict:
+        # Include adjacent senior grades (11↔12) and junior (9↔10) when topic may span books
+        if gl in (11, 12) and any(g in (11, 12) for g in levels):
+            return True
+        if gl in (9, 10) and any(g in (9, 10) for g in levels):
+            return True
+    return False
+
+
+def _is_extreme_book(hit: dict) -> bool:
+    key = normalize_source_key(hit.get('source_file') or hit.get('source') or '')
+    return key in EXTREME_BOOKS or 'extreme mathematics' in key
+
+
+def _is_grade_textbook(hit: dict) -> bool:
+    key = normalize_source_key(hit.get('source_file') or hit.get('source') or '')
+    if key in GRADE_TEXTBOOKS:
+        return True
+    return 'mathematics-textbook' in key and 'extreme' not in key
+
+
+def _grade_rank_boost(hit: dict, grade_level) -> int:
+    """Higher score = better match for requested grade (used for ranking, not hard exclusion)."""
+    if grade_level is None:
+        return 0
+    gl = int(grade_level)
+    levels = chunk_grade_levels(hit)
+    if not levels:
+        return 5
+    if gl in levels:
+        return 100
+    if gl in (11, 12) and any(g in (11, 12) for g in levels):
+        return 70
+    if gl in (9, 10) and any(g in (9, 10) for g in levels):
+        return 70
+    return max(0, 30 - 10 * min(abs(l - gl) for l in levels))
 
 
 def extract_section_title(text: str) -> str:
@@ -72,28 +148,32 @@ def extract_section_title(text: str) -> str:
     return m.group(0).strip() if m else ''
 
 
-# ── Priority Source Order ──────────────────────────────────────────────────────
-SOURCE_PRIORITY = {
-    'extreme mathematics grade 9&10.pdf':     1,
-    'extreme mathematics grade 11&12.pdf':    2,
-    'grade9_math.pdf':                         3,
-    'grade10_math.pdf':                        4,
-    'grade11_math.pdf':                        5,
-    'grade12_math.pdf':                        6,
+# Quiz generation: Extreme books first, then grade textbooks
+QUIZ_SOURCE_PRIORITY = {
+    'extreme mathematics grade 9&10.pdf': 1,
+    'extreme mathematics grade 11&12.pdf': 2,
+    'grade9_math.pdf': 3,
+    'grade10_math.pdf': 4,
+    'grade11_math.pdf': 5,
+    'grade12_math.pdf': 6,
 }
-EXTREME_BOOKS = {
-    'extreme mathematics grade 9&10.pdf',
-    'extreme mathematics grade 11&12.pdf',
-}
+# Content/notes search: grade textbooks only, equal priority across grades 9–12
+CONTENT_SOURCE_PRIORITY = {g: 1 for g in GRADE_TEXTBOOKS}
 
 
 def _source_weight(hit: dict) -> int:
-    sf = (hit.get('source_file') or hit.get('source') or '').lower().strip()
-    return SOURCE_PRIORITY.get(sf, 99)
+    """Priority for quiz / exam-style sourcing (includes Extreme books)."""
+    sf = normalize_source_key(hit.get('source_file') or hit.get('source') or '')
+    return QUIZ_SOURCE_PRIORITY.get(sf, 99)
+
+
+def _content_source_weight(hit: dict) -> int:
+    sf = normalize_source_key(hit.get('source_file') or hit.get('source') or '')
+    return CONTENT_SOURCE_PRIORITY.get(sf, 50)
 
 
 def _is_extreme(source_file: str) -> bool:
-    return source_file.lower().strip() in EXTREME_BOOKS
+    return normalize_source_key(source_file) in EXTREME_BOOKS
 
 
 def _search_raw(query: str, grade_level, k: int):
@@ -128,66 +208,177 @@ def _search_raw(query: str, grade_level, k: int):
     return results
 
 
-def search_curriculum(query: str, grade_level=None, k: int = 5) -> list:
-    data = _load_faiss()
-    if not data or not query.strip():
-        return []
-    raw = _search_raw(query, grade_level, k=k * 3)
-    filtered = [h for h in raw if chunk_matches_grade(h, grade_level)]
-    filtered.sort(key=lambda h: (_source_weight(h), -h['similarity']))
-    return filtered[:k]
-
-
-def search_all_books(query: str, grade_level=None, k_per_phase: int = 4) -> list:
-    """Two-phase priority search: Extreme first, then grade books."""
-    data = _load_faiss()
-    if not data or not query.strip():
-        return []
-
-    extreme_hits = []
-    for sf in ['Extreme Mathematics Grade 9&10.pdf', 'Extreme Mathematics Grade 11&12.pdf']:
-        raw = _search_raw(query, grade_level, k=k_per_phase)
-        for h in raw:
-            sf_hit = (h.get('source_file') or h.get('source') or '').lower()
-            sf_target = sf.lower()
-            if sf_target in sf_hit or sf_hit in sf_target:
-                if h not in extreme_hits:
-                    extreme_hits.append(h)
-
-    if len(extreme_hits) >= k_per_phase:
-        extreme_hits.sort(key=lambda h: (-h['similarity'], _source_weight(h)))
-        return extreme_hits[:k_per_phase]
-
-    grade_hits = []
-    grade_sources = ['grade9_math.pdf', 'grade10_math.pdf', 'grade11_math.pdf', 'grade12_math.pdf']
-    for sf in grade_sources:
-        raw = _search_raw(query, grade_level, k=k_per_phase)
-        for h in raw:
-            sf_hit = (h.get('source_file') or h.get('source') or '').lower()
-            sf_target = sf.lower()
-            if sf_target in sf_hit or sf_hit in sf_target:
-                if h not in grade_hits and h not in extreme_hits:
-                    grade_hits.append(h)
-
-    all_hits = extreme_hits + grade_hits
+def _dedupe_hits(hits: list) -> list:
     seen = set()
     unique = []
-    for h in all_hits:
-        key = ((h.get('source_file') or h.get('source') or '').lower(),
-               str(h.get('page') or ''))
+    for h in hits:
+        key = (
+            normalize_source_key(h.get('source_file') or h.get('source') or ''),
+            str(h.get('page') or ''),
+        )
         if key not in seen:
             seen.add(key)
             unique.append(h)
-    unique.sort(key=lambda h: (_source_weight(h), -h['similarity']))
-    return unique[:k_per_phase * 2]
+    return unique
+
+
+def _balance_by_textbook(hits: list, k: int) -> list:
+    """Round-robin across textbooks so Grade 11/12 are not drowned out by 9/10."""
+    by_src = {}
+    for h in hits:
+        sk = normalize_source_key(h.get('source_file') or h.get('source') or '')
+        by_src.setdefault(sk, []).append(h)
+    for sk in by_src:
+        by_src[sk].sort(key=lambda x: -x.get('similarity', 0))
+
+    sources = sorted(
+        by_src.keys(),
+        key=lambda s: -max((h.get('similarity', 0) for h in by_src[s]), default=0),
+    )
+    result = []
+    round_idx = 0
+    while len(result) < k and sources:
+        added = False
+        for sk in sources:
+            if round_idx < len(by_src[sk]):
+                result.append(by_src[sk][round_idx])
+                added = True
+                if len(result) >= k:
+                    break
+        if not added:
+            break
+        round_idx += 1
+    if len(result) < k:
+        for h in hits:
+            if h not in result:
+                result.append(h)
+            if len(result) >= k:
+                break
+    return result[:k]
+
+
+def _filter_hits_by_topic_query(hits: list, query: str) -> list:
+    """
+    Extra relevance filter for material/notes generation.
+
+    Ensures that very broad queries like "algebra" still retrieve chunks whose
+    text or section headings actually mention the topic keywords.
+    """
+    q = (query or '').lower().strip()
+    if not hits or not q:
+        return hits
+
+    # Extract meaningful tokens from the topic (e.g. "algebra", "quadratic").
+    tokens = [t for t in re.findall(r'[a-z0-9]+', q) if len(t) > 3]
+    if not tokens:
+        return hits
+
+    filtered = []
+    for h in hits:
+        blob = (h.get('text') or '') + ' ' + (h.get('section') or '')
+        blob_l = blob.lower()
+        if not blob_l.strip():
+            continue
+        if any(t in blob_l for t in tokens):
+            filtered.append(h)
+
+    # Fall back to original list if the filter was too aggressive.
+    return filtered or hits
+
+
+def search_curriculum_content(query: str, grade_level=None, k: int = 5) -> list:
+    """
+    Search grade textbooks only (no Extreme Mathematics).
+    Soft grade ranking + balanced results across all indexed grade books,
+    with an additional topic-keyword relevance filter for materials/notes.
+    """
+    data = _load_faiss()
+    if not data or not query.strip():
+        return []
+
+    raw = _search_raw(query, grade_level=None, k=max(k * 25, 50))
+    grade_hits = [h for h in raw if _is_grade_textbook(h)]
+
+    if grade_level is not None:
+        preferred = [h for h in grade_hits if chunk_matches_grade(h, grade_level, strict=False)]
+        # If requested grade band has no indexed hits, fall back to any grade textbook
+        if preferred:
+            grade_hits = preferred
+
+    # Apply topic-keyword filter so "algebra" does not return unrelated units.
+    grade_hits = _filter_hits_by_topic_query(grade_hits, query)
+
+    grade_hits.sort(
+        key=lambda h: (
+            _grade_rank_boost(h, grade_level),
+            -h.get('similarity', 0),
+            -_content_source_weight(h),
+        ),
+        reverse=True,
+    )
+    return _balance_by_textbook(_dedupe_hits(grade_hits), k)
+
+
+def search_curriculum(query: str, grade_level=None, k: int = 5) -> list:
+    """Public curriculum search API — grade textbooks only, proper citations."""
+    return search_curriculum_content(query, grade_level, k)
+
+
+def search_all_books(query: str, grade_level=None, k_per_phase: int = 4) -> list:
+    """
+    Quiz-oriented search: Extreme Mathematics first, then grade textbooks.
+    Do NOT use for notes, materials, or curriculum preview.
+    """
+    data = _load_faiss()
+    if not data or not query.strip():
+        return []
+
+    raw = _search_raw(query, grade_level=None, k=max(k_per_phase * 20, 40))
+    extreme_hits = [h for h in raw if _is_extreme_book(h)]
+    grade_hits = [h for h in raw if _is_grade_textbook(h)]
+
+    extreme_hits.sort(key=lambda h: (-h.get('similarity', 0), _source_weight(h)))
+    grade_hits.sort(
+        key=lambda h: (
+            _grade_rank_boost(h, grade_level),
+            -h.get('similarity', 0),
+            _content_source_weight(h),
+        ),
+        reverse=True,
+    )
+
+    combined = _dedupe_hits(extreme_hits[:k_per_phase] + grade_hits[:k_per_phase])
+    if len(combined) < k_per_phase:
+        combined = _dedupe_hits(extreme_hits + grade_hits)[: k_per_phase * 2]
+    return combined[: k_per_phase * 2]
 
 
 def chunks_for_rag(query: str, grade_level=None, k: int = 5) -> list:
-    hits = search_all_books(query, grade_level, k_per_phase=k)
+    """Content chunks for notes/materials — grade textbooks only."""
+    hits = search_curriculum_content(query, grade_level, k=k)
     return [
         {'text': h.get('text', ''), 'source': h.get('source', ''), 'page': h.get('page', '')}
         for h in hits
     ]
+
+
+def get_indexed_textbooks() -> dict:
+    """Report which textbooks are present in the FAISS index."""
+    data = _load_faiss()
+    if not data:
+        return {'indexed': [], 'missing_grade': list(GRADE_TEXTBOOKS), 'missing_extreme': list(EXTREME_BOOKS)}
+    sources = set(
+        normalize_source_key(c.get('source', '')) for c in data['metadata']
+    )
+    indexed_grade = sorted(sources & GRADE_TEXTBOOKS)
+    indexed_extreme = sorted(sources & EXTREME_BOOKS)
+    return {
+        'indexed_grade': indexed_grade,
+        'indexed_extreme': indexed_extreme,
+        'missing_grade': sorted(GRADE_TEXTBOOKS - sources),
+        'missing_extreme': sorted(EXTREME_BOOKS - sources),
+        'total_chunks': len(data['metadata']),
+    }
 
 
 def build_citation_from_hits(hits, fallback_topic: str = '') -> dict:
@@ -196,13 +387,20 @@ def build_citation_from_hits(hits, fallback_topic: str = '') -> dict:
             'source_citation': f'Curriculum \u2014 {fallback_topic}' if fallback_topic else '',
             'source_file': '', 'source_page': None, 'source_grade': None, 'section': '',
         }
+    ranked = sorted(
+        hits,
+        key=lambda h: (
+            999 if _is_extreme_book(h) else _content_source_weight(h),
+            -h.get('similarity', 0),
+        ),
+    )
     sources_seen = []
-    for h in hits:
+    for h in ranked:
         sf = h.get('source_file') or h.get('source', '')
         sf_lower = sf.lower().strip()
         if sf_lower not in sources_seen:
             sources_seen.append(sf_lower)
-    first = hits[0]
+    first = ranked[0]
     source_file = first.get('source_file') or first.get('source', '')
     page = first.get('source_page') or first.get('page', '')
     grade = first.get('source_grade') or first.get('grade_level')
@@ -216,7 +414,7 @@ def build_citation_from_hits(hits, fallback_topic: str = '') -> dict:
         citation = f'{citation} \u2014 {section}'
     if len(sources_seen) > 1:
         second = None
-        for h in hits[1:]:
+        for h in ranked[1:]:
             sf2 = h.get('source_file') or h.get('source', '')
             sf2l = sf2.lower().strip()
             if sf2l != source_file.lower().strip() and sf2l not in sources_seen[1:]:
@@ -243,37 +441,45 @@ def _book_display_name(source_file: str) -> str:
             'Extreme Mathematics: Grade 9 & 10 (Ethiopia MOE)',
         'extreme mathematics grade 11&12.pdf':
             'Extreme Mathematics: Grade 11 & 12 (Ethiopia MOE)',
-        'grade9_math.pdf':
-            'Ethiopian Grade 9 Mathematics Textbook',
-        'grade10_math.pdf':
-            'Ethiopian Grade 10 Mathematics Textbook',
-        'grade11_math.pdf':
-            'Ethiopian Grade 11 Mathematics Textbook',
-        'grade12_math.pdf':
-            'Ethiopian Grade 12 Mathematics Textbook',
+        'grade9_math.pdf': 'Ethiopian Grade 9 Mathematics Textbook',
+        'grade10_math.pdf': 'Ethiopian Grade 10 Mathematics Textbook',
+        'grade11_math.pdf': 'Ethiopian Grade 11 Mathematics Textbook',
+        'grade12_math.pdf': 'Ethiopian Grade 12 Mathematics Textbook',
     }
+    key = normalize_source_key(source_file)
     return names.get(key, source_file.replace('.pdf', '').replace('_', ' ').title())
 
 
 def build_material_html(extracted: dict, questions: list) -> str:
+    from math_format import format_note_html, format_note_html_inline, steps_to_html
+
     html_parts = []
     if extracted.get('explanation'):
         html_parts.append(
-            f'<div class="rag-explanation"><h3>Curriculum Overview</h3>'
-            f'<p>{extracted["explanation"]}</p></div>'
+            '<div class="rag-explanation"><h3>Curriculum Overview</h3>'
+            f'{format_note_html(extracted["explanation"])}</div>'
         )
+    if extracted.get('steps'):
+        html_parts.append(steps_to_html(extracted['steps']))
     if extracted.get('formulas'):
-        formulas_html = ''.join(f'<li><code>{f}</code></li>' for f in extracted['formulas'])
+        formulas_html = ''.join(
+            f'<li><code>{format_note_html_inline(f)}</code></li>' for f in extracted['formulas']
+        )
         html_parts.append(
             f'<div class="rag-formulas"><h3>Key Formulas</h3><ul>{formulas_html}</ul></div>'
         )
     if extracted.get('worked_examples'):
-        we_html = ''.join(f'<li>{e}</li>' for e in extracted['worked_examples'])
+        we_html = ''.join(
+            f'<li>{format_note_html(e)}</li>' for e in extracted['worked_examples']
+        )
         html_parts.append(
-            f'<div class="rag-examples"><h3>Worked Examples from Textbook</h3><ul>{we_html}</ul></div>'
+            '<div class="rag-examples"><h3>Worked Examples from Textbook</h3>'
+            f'<ul>{we_html}</ul></div>'
         )
     elif extracted.get('examples'):
-        examples_html = ''.join(f'<li>{e}</li>' for e in extracted['examples'])
+        examples_html = ''.join(
+            f'<li>{format_note_html(e)}</li>' for e in extracted['examples']
+        )
         html_parts.append(
             f'<div class="rag-examples"><h3>Curriculum Examples</h3><ul>{examples_html}</ul></div>'
         )
@@ -288,7 +494,7 @@ def build_material_html(extracted: dict, questions: list) -> str:
     questions_html = []
     for idx, q in enumerate(questions, 1):
         opts_html = ''.join(
-            f'<li data-idx="{i}" class="rag-option">{chr(65 + i)}. {opt}</li>'
+            f'<li data-idx="{i}" class="rag-option">{chr(65 + i)}. {format_note_html_inline(str(opt))}</li>'
             for i, opt in enumerate(q['options'])
         )
         src_tag = ''
@@ -299,13 +505,15 @@ def build_material_html(extracted: dict, questions: list) -> str:
             style_tag = '<span class="rag-style-tag extreme">Exam-style from Extreme Mathematics</span>'
         elif q.get('question_style') == 'foundational':
             style_tag = '<span class="rag-style-tag grade">Foundational \u2014 Grade Textbook</span>'
+        q_text = format_note_html_inline(q.get('question', ''))
+        q_expl = format_note_html_inline(q.get('explanation', ''))
         questions_html.append(
             f'<div class="rag-question" data-correct="{q["correct_index"]}">'
-            f'<p><strong>Q{idx}.</strong> {q["question"]}</p>'
+            f'<p><strong>Q{idx}.</strong> {q_text}</p>'
             f'{style_tag}{src_tag}'
             f'<ul class="rag-options">{opts_html}</ul>'
             f'<div class="rag-answer" style="display:none">'
-            f'<strong>Answer: {q["correct_letter"]}</strong> \u2014 {q["explanation"]}'
+            f'<strong>Answer: {q["correct_letter"]}</strong> \u2014 {q_expl}'
             f'</div></div>'
         )
     html_parts.append(
@@ -315,15 +523,30 @@ def build_material_html(extracted: dict, questions: list) -> str:
 
 
 def build_assistant_answer(extracted: dict, question: str) -> str:
+    from math_format import format_math_for_display, truncate_at_sentence
+
     parts = []
     if extracted.get('explanation'):
-        parts.append(extracted['explanation'])
+        parts.append(format_math_for_display(extracted['explanation']))
+    if extracted.get('steps'):
+        parts.append('Step-by-step:\n' + '\n'.join(
+            f'{i}. {truncate_at_sentence(s, 400)}'
+            for i, s in enumerate(extracted['steps'][:5], 1)
+        ))
     if extracted.get('formulas'):
-        parts.append('Key formulas:\n' + '\n'.join(f'\u2022 {f}' for f in extracted['formulas'][:4]))
+        parts.append('Key formulas:\n' + '\n'.join(
+            f'\u2022 {format_math_for_display(f)}' for f in extracted['formulas'][:4]
+        ))
     if extracted.get('worked_examples'):
-        parts.append('Worked example from your textbook:\n' + extracted['worked_examples'][0][:400])
+        parts.append(
+            'Worked example from your textbook:\n'
+            + truncate_at_sentence(format_math_for_display(extracted['worked_examples'][0]), 500)
+        )
     elif extracted.get('examples'):
-        parts.append('Example from your textbook:\n' + extracted['examples'][0][:400])
+        parts.append(
+            'Example from your textbook:\n'
+            + truncate_at_sentence(format_math_for_display(extracted['examples'][0]), 500)
+        )
     if not parts:
         parts.append(
             'I searched all 6 Ethiopian curriculum textbooks for your question. '
@@ -407,7 +630,8 @@ MATH_KEYWORDS = {
                       'simplify', 'expand', 'exponent', 'logarithm', 'algebra'],
     'limits':        ['limit', 'lim ', 'continuity', 'continuous', 'approaches', 'infinity',
                       'tends to'],
-    'derivative':    ['derivative', 'differentiate', 'd/dx', 'tangent line', 'slope of curve'],
+    'derivative':    ['derivative', 'derivation', 'differentiate', 'd/dx', 'tangent line',
+                      'slope of curve', "f'"],
     'integration':   ['integral', 'integrate', '∫', 'antiderivative', 'area under'],
     'matrix':        ['matrix', 'matrices', 'determinant', 'row', 'column', 'inverse'],
     'trigonometry':  ['trig', 'sin', 'cos', 'tan', 'angle', 'radian', 'degree', 'theta'],
@@ -480,26 +704,536 @@ def _keyword_hints(question: str) -> str:
     stop = {'the', 'a', 'an', 'is', 'are', 'was', 'were', 'i', 'me', 'do', 'does',
             'how', 'what', 'why', 'when', 'where', 'who', 'help', 'can', 'you',
             'with', 'this', 'that', 'about', 'please', 'want', 'need', 'give',
-            'tell', 'show', 'explain', 'find', 'find', 'from', 'my', 'your'}
+            'tell', 'show', 'explain', 'find', 'find', 'from', 'my', 'your',
+            'something', 'else', 'please', 'just', 'like', 'would', 'could'}
     tokens = re.findall(r'[a-z0-9_.-]+', q)
     tokens = [t for t in tokens if t not in stop and len(t) > 1]
-    return ' '.join(tokens[:5])
+    topic = _detect_math_topic(question)
+    if topic != 'general' and topic not in tokens:
+        tokens.insert(0, topic.replace(' ', ''))
+    return ' '.join(tokens[:6])
+
+
+OUT_OF_SCOPE_MESSAGE = (
+    "I'm sorry — that's out of my scope right now. I'm still under development.\n\n"
+    "Please ask something else from your Grade 9–12 math textbooks, such as:\n"
+    "• Solving linear or quadratic equations\n"
+    "• Factoring and simplifying expressions\n"
+    "• Limits, derivatives, or integration\n"
+    "• Word problems (age, mixture, motion, work)"
+)
+
+# Minimum FAISS similarity (0–100) before trusting textbook retrieval
+MIN_RELEVANCE_SIMILARITY = 50
+
+# Section keywords that often appear in irrelevant retrieval for algebra questions
+_TOPIC_MISMATCH_MARKERS = {
+    'algebra': [
+        'congruency and similarity', 'solid figures', 'frequency curve',
+        'bar chart', 'pie chart', 'representation of data', 'venn diagram',
+        'biology', 'chemistry', 'history', 'capital of',
+    ],
+    'derivative': ['solid figures', 'frequency polygon', 'pie chart', 'bar chart'],
+    'limits': ['solid figures', 'frequency polygon', 'pie chart', 'venn diagram'],
+    'integration': ['solid figures', 'venn diagram', 'bar chart'],
+}
+
+
+def _extract_query_terms(question: str) -> list:
+    """Significant terms from the student question for relevance checks."""
+    stop = {
+        'the', 'a', 'an', 'is', 'are', 'was', 'were', 'i', 'me', 'do', 'does',
+        'how', 'what', 'why', 'when', 'where', 'who', 'help', 'can', 'you',
+        'with', 'this', 'that', 'about', 'please', 'want', 'need', 'give',
+        'tell', 'show', 'explain', 'find', 'from', 'my', 'your', 'something',
+        'else', 'just', 'like', 'would', 'could', 'ask', 'question',
+    }
+    q = question.lower()
+    tokens = re.findall(r'[a-z0-9]+', q)
+    terms = [t for t in tokens if t not in stop and len(t) > 2]
+    # Keep short math tokens (x, y) and numeric equation fragments
+    for t in re.findall(r'\b[xyz]\b', q):
+        if t not in terms:
+            terms.append(t)
+    return terms
+
+
+def _hit_relevant_to_question(hit: dict, question: str, topic: str) -> bool:
+    """True if a search hit plausibly answers the student's question."""
+    blob = (
+        (hit.get('text') or '') + ' ' + (hit.get('section') or '')
+    ).lower()
+    if not blob.strip():
+        return False
+
+    terms = _extract_query_terms(question)
+    if terms:
+        overlap = sum(1 for t in terms if t in blob)
+        if overlap == 0 and hit.get('similarity', 0) < 62:
+            return False
+
+    for marker in _TOPIC_MISMATCH_MARKERS.get(topic, []):
+        if marker in blob:
+            topic_terms = {
+                'algebra': ('equation', 'algebra', 'factor', 'quadratic', 'linear',
+                            'polynomial', 'expression', 'solve', 'variable'),
+            }.get(topic, ())
+            if topic_terms and not any(tt in blob for tt in topic_terms):
+                return False
+    return True
+
+
+def _filter_relevant_hits(hits: list, question: str, topic: str) -> list:
+    """Drop textbook chunks that don't match the question topic or keywords."""
+    if not hits:
+        return []
+    filtered = [h for h in hits if _hit_relevant_to_question(h, question, topic)]
+    return filtered if filtered else []
+
+
+def _should_route_to_linear_solver(question: str) -> bool:
+    """Detect linear equations (with or without the word 'solve')."""
+    q = question.lower()
+    if _should_route_to_limit(q) or _should_route_to_derivative(q):
+        return False
+    if '=' not in q:
+        return False
+    if re.search(r'\b(quadratic|x\s*\^?\s*2|x²|factor(?:ing)?)\b', q):
+        return False
+    if re.search(r'[a-z]\s*[=+\-]|[+\-]\s*\d+\s*[a-z]|=\s*[\d.]+', q):
+        return True
+    if re.search(r'\b(solve|find|evaluate|calculate|what\s+is)\b', q) and re.search(
+        r'[a-z]\s*[*]?\s*\d|\d\s*[a-z]', q
+    ):
+        return True
+    return False
+
+
+def _should_route_to_quadratic(question: str) -> bool:
+    """Detect quadratic / factoring questions."""
+    q = question.lower()
+    if _should_route_to_limit(q) or _should_route_to_derivative(q):
+        return False
+    if re.search(r'\b(quadratic|factor(?:ing)?)\b', q):
+        return True
+    if re.search(r'\bpolynomial\b', q) and '=' in q:
+        return True
+    # Require '=' so limits/derivatives with x² are not misrouted
+    if re.search(r'x\s*\^?\s*2|x²|x\^2', q) and '=' in q:
+        return True
+    return False
+
+
+def _linear_solution_succeeded(steps: str) -> bool:
+    return bool(re.search(r'\bAnswer:\s*[a-z]\s*=', steps, re.IGNORECASE))
+
+
+def _out_of_scope_response(topic: str = 'out_of_scope') -> dict:
+    return {
+        'answer': OUT_OF_SCOPE_MESSAGE,
+        'source_citation': '', 'source_file': '', 'source_page': '',
+        'source_grade': None, 'section': '',
+        'confidence': 'high', 'topic': topic, 'hits': [],
+    }
+
+
+# ── Limits & Derivatives (Grade 11–12 calculus) ─────────────────────────────────
+
+def _normalize_calculus_expr(expr: str) -> str:
+    s = expr.lower().strip()
+    s = s.replace('²', '^2').replace('³', '^3').replace('⁴', '^4')
+    s = s.replace('→', '->').replace('−', '-').replace('–', '-')
+    s = re.sub(r'\s+', '', s)
+    s = s.replace('^', '**')
+    s = re.sub(r'(\d)([xyz])', r'\1*\2', s)
+    s = re.sub(r'\)\(', r')*(', s)
+    return s
+
+
+def _format_poly_term(coef: float, power: int, var: str = 'x') -> str:
+    if abs(coef) < 1e-12:
+        return ''
+    c = int(coef) if abs(coef - int(coef)) < 1e-9 else round(coef, 4)
+    if power == 0:
+        return f'{c:+d}' if isinstance(c, int) else f'{coef:+.4g}'
+    if power == 1:
+        if c == 1:
+            return f'+{var}'
+        if c == -1:
+            return f'-{var}'
+        return f'{c:+d}{var}' if isinstance(c, int) else f'{coef:+.4g}{var}'
+    if c == 1:
+        return f'+{var}**{power}'
+    if c == -1:
+        return f'-{var}**{power}'
+    return f'{c:+d}{var}**{power}' if isinstance(c, int) else f'{coef:+.4g}{var}**{power}'
+
+
+def _format_polynomial(terms: list, var: str = 'x') -> str:
+    """Format list of (coef, power) into a readable polynomial."""
+    parts = [_format_poly_term(c, p, var) for c, p in terms if abs(c) > 1e-12]
+    if not parts:
+        return '0'
+    s = ''.join(parts)
+    if s.startswith('+'):
+        s = s[1:]
+    return s.replace('**2', '²').replace('**3', '³')
+
+
+def _parse_polynomial_terms(expr: str, var: str = 'x') -> list:
+    """Parse ax^n + bx + c into [(coef, power), ...]."""
+    s = _normalize_calculus_expr(expr)
+    if not s:
+        return []
+    s = s.replace(f'-{var}', f'-1*{var}').replace(f'+{var}', f'+1*{var}')
+    if s.startswith(f'{var}'):
+        s = '1*' + s
+    if s[0] not in '+-':
+        s = '+' + s
+    parts = re.findall(r'[+-][^+-]+', s)
+    terms = []
+    for part in parts:
+        part = part.strip()
+        if not part:
+            continue
+        if re.fullmatch(r'[+-]?\d+\.?\d*', part):
+            terms.append((float(part), 0))
+            continue
+        m = re.match(
+            rf'([+-]?\d*\.?\d*)\*{var}(?:\*\*(\d+))?$|'
+            rf'([+-]?\d*\.?\d*){var}(?:\*\*(\d+))?$',
+            part,
+        )
+        if not m:
+            continue
+        coef_str = m.group(1) or m.group(3) or '1'
+        if coef_str in ('', '+'):
+            coef = 1.0
+        elif coef_str == '-':
+            coef = -1.0
+        else:
+            coef = float(coef_str)
+        power = int(m.group(2) or m.group(4) or 1)
+        terms.append((coef, power))
+    return terms
+
+
+def _eval_polynomial_at(expr: str, x_val: float, var: str = 'x') -> float:
+    return sum(c * (x_val ** p) for c, p in _parse_polynomial_terms(expr, var))
+
+
+def _should_route_to_limit(question: str) -> bool:
+    q = question.lower()
+    if re.search(r'\blim(?:it)?\b|\blim\s*\(', q):
+        return True
+    if re.search(r'\blimit\b', q) and re.search(
+        r'\b(as|approaches|->|→|tends\s+to|when)\b', q
+    ):
+        return True
+    return False
+
+
+def _should_route_to_derivative(question: str) -> bool:
+    q = question.lower()
+    return bool(re.search(
+        r'\b(derivative|derivation|differentiate|d/dx|d\s*/\s*dx)\b|'
+        r"d\s*['\u2019]\s*\(|f\s*['\u2019]\s*\(",
+        q,
+    ))
+
+
+def _parse_approach_value(raw: str):
+    raw = raw.lower().strip()
+    if raw in ('inf', 'infinity', '∞', '+inf', '+infinity'):
+        return 'inf'
+    if raw in ('-inf', '-infinity'):
+        return '-inf'
+    try:
+        v = float(raw)
+        return int(v) if abs(v - int(v)) < 1e-9 else v
+    except ValueError:
+        return None
+
+
+def _extract_limit_parts(question: str):
+    """Return (approach, expression) or (None, None)."""
+    q = question
+    # lim(x -> 2) expr
+    m = re.search(
+        r'lim(?:it)?\s*\(\s*x\s*(?:->|→|to)\s*'
+        r'([+-]?\d+(?:\.\d+)?|inf(?:inity)?|∞)\s*\)\s*(.+)',
+        q, re.IGNORECASE | re.DOTALL,
+    )
+    if m:
+        return _parse_approach_value(m.group(1)), m.group(2).strip()
+
+    # limit of ... as x approaches 2
+    m = re.search(
+        r'limit\s+of\s+(.+?)\s+as\s+x\s+(?:approaches|tends\s+to|->|→)\s*'
+        r'([+-]?\d+(?:\.\d+)?|inf(?:inity)?|∞)',
+        q, re.IGNORECASE | re.DOTALL,
+    )
+    if m:
+        return _parse_approach_value(m.group(2)), m.group(1).strip()
+
+    # find/evaluate lim ... (expr) x->2 at end
+    m = re.search(
+        r'(?:find|evaluate|calculate|what\s+is)\s+.*?lim(?:it)?\s*\(\s*x\s*(?:->|→|to)\s*'
+        r'([+-]?\d+(?:\.\d+)?|inf(?:inity)?|∞)\s*\)\s*(.+)',
+        q, re.IGNORECASE | re.DOTALL,
+    )
+    if m:
+        return _parse_approach_value(m.group(1)), m.group(2).strip()
+
+    return None, None
+
+
+def _extract_derivative_expr(question: str) -> str:
+    q = question.strip()
+    m = re.search(r'd/dx\s*\(?\s*(.+?)\s*\)?\s*$', q, re.IGNORECASE)
+    if m:
+        return m.group(1).strip()
+    expr = re.sub(
+        r'.*?\b(?:find|what\s+is|calculate|evaluate|the)\s+',
+        '', q, count=1, flags=re.IGNORECASE,
+    )
+    expr = re.sub(
+        r'^(?:the\s+)?(?:derivative|derivation)\s+(?:of\s+)?',
+        '', expr, flags=re.IGNORECASE,
+    )
+    expr = re.sub(r'^(?:differentiate)\s+', '', expr, flags=re.IGNORECASE)
+    expr = re.sub(r'[?.!]+$', '', expr).strip()
+    return expr
+
+
+def _solve_limit(question: str):
+    """Step-by-step limit evaluation for common Grade 11–12 patterns."""
+    approach, expr = _extract_limit_parts(question)
+    if approach is None or not expr:
+        return None
+
+    expr_n = _normalize_calculus_expr(expr)
+    approach_disp = '∞' if approach == 'inf' else ('-∞' if approach == '-inf' else str(approach))
+
+    # ── lim x→0  sin(ax)/(bx) ────────────────────────────────────────────────
+    m_trig = re.search(
+        r'sin\(([+-]?\d*\.?\d*)\*?x\)/\(?([+-]?\d*\.?\d*)\*?x\)?$',
+        expr_n,
+    )
+    if m_trig and approach in (0, '0', 0.0):
+        a_str, b_str = m_trig.group(1) or '1', m_trig.group(2) or '1'
+        a = float(a_str) if a_str not in ('', '+', '-') else (1.0 if a_str != '-' else -1.0)
+        b = float(b_str) if b_str not in ('', '+', '-') else (1.0 if b_str != '-' else -1.0)
+        if abs(b) < 1e-12:
+            return None
+        result = a / b
+        result_disp = int(result) if abs(result - int(result)) < 1e-9 else round(result, 4)
+        a_disp = int(a) if abs(a - int(a)) < 1e-9 else a
+        b_disp = int(b) if abs(b - int(b)) < 1e-9 else b
+        steps = (
+            f"Step 1: Recognize the standard limit lim(x→0) sin(u)/u = 1 (let u = {a_disp}x).\n"
+            f"Step 2: Rewrite sin({a_disp}x)/({b_disp}x) = ({a_disp}/{b_disp}) · sin({a_disp}x)/({a_disp}x).\n"
+            f"Step 3: As x→0, sin({a_disp}x)/({a_disp}x) → 1, so the limit = {a_disp}/{b_disp}.\n"
+            f"Answer: {result_disp}"
+        )
+        return {'steps': steps, 'topic': 'Limits'}
+
+    # ── lim x→a  (x² - a²)/(x - a) ───────────────────────────────────────────
+    m_rat = re.search(
+        r'\(x\*\*2-(\d+)\)/\(x-(\d+)\)$',
+        expr_n,
+    )
+    if m_rat and approach not in ('inf', '-inf'):
+        num_const, denom_root = int(m_rat.group(1)), int(m_rat.group(2))
+        a = float(approach)
+        if num_const == denom_root ** 2:
+            result = 2 * a
+            result_disp = int(result) if abs(result - int(result)) < 1e-9 else round(result, 4)
+            steps = (
+                f"Step 1: Factor the numerator: x² - {num_const} = (x - {denom_root})(x + {denom_root}).\n"
+                f"Step 2: Cancel (x - {denom_root}): (x + {denom_root}).\n"
+                f"Step 3: Substitute x = {approach_disp}: {approach_disp} + {denom_root} = {result_disp}.\n"
+                f"Answer: {result_disp}"
+            )
+            return {'steps': steps, 'topic': 'Limits'}
+
+    # ── lim x→∞  rational function (leading coefficients) ─────────────────────
+    if approach in ('inf', '-inf'):
+        if '/' in expr_n:
+            num_s, den_s = expr_n.split('/', 1)
+            num_terms = _parse_polynomial_terms(num_s.strip('()'))
+            den_terms = _parse_polynomial_terms(den_s.strip('()'))
+            if num_terms and den_terms:
+                num_deg = max(p for _, p in num_terms)
+                den_deg = max(p for _, p in den_terms)
+                num_lead = sum(c for c, p in num_terms if p == num_deg)
+                den_lead = sum(c for c, p in den_terms if p == den_deg)
+                if num_deg > den_deg:
+                    result_disp = '∞' if approach == 'inf' else '-∞'
+                    steps = (
+                        f"Step 1: As x→{approach_disp}, the highest power dominates.\n"
+                        f"Step 2: Degree of numerator ({num_deg}) > denominator ({den_deg}).\n"
+                        f"Answer: {result_disp}"
+                    )
+                    return {'steps': steps, 'topic': 'Limits'}
+                if num_deg < den_deg:
+                    steps = (
+                        f"Step 1: As x→{approach_disp}, the highest power dominates.\n"
+                        f"Step 2: Degree of numerator ({num_deg}) < denominator ({den_deg}).\n"
+                        f"Answer: 0"
+                    )
+                    return {'steps': steps, 'topic': 'Limits'}
+                if abs(den_lead) > 1e-12:
+                    result = num_lead / den_lead
+                    result_disp = int(result) if abs(result - int(result)) < 1e-9 else round(result, 4)
+                    steps = (
+                        f"Step 1: Divide numerator and denominator by x^{num_deg}.\n"
+                        f"Step 2: Leading coefficients: {num_lead}/{den_lead}.\n"
+                        f"Answer: {result_disp}"
+                    )
+                    return {'steps': steps, 'topic': 'Limits'}
+
+    # ── Direct substitution (polynomial / simple expression) ─────────────────
+    if approach not in ('inf', '-inf'):
+        try:
+            val = _eval_polynomial_at(expr, float(approach))
+            val_disp = int(val) if abs(val - int(val)) < 1e-9 else round(val, 4)
+            steps = (
+                f"Step 1: Substitute x = {approach_disp} directly into the expression.\n"
+                f"Step 2: Evaluate f({approach_disp}) = {val_disp}.\n"
+                f"Answer: {val_disp}"
+            )
+            return {'steps': steps, 'topic': 'Limits'}
+        except (ValueError, ZeroDivisionError, OverflowError):
+            pass
+
+    return None
+
+
+def _solve_derivative(question: str):
+    """Step-by-step derivative using power, sum, and basic trig rules."""
+    expr = _extract_derivative_expr(question)
+    if not expr:
+        return None
+
+    expr_n = _normalize_calculus_expr(expr)
+
+    # Basic elementary rules (single-term)
+    elementary = [
+        (r'^sin\(x\)$', 'cos(x)',
+         'Step 1: Use the rule d/dx[sin(x)] = cos(x).\nAnswer: cos(x)'),
+        (r'^cos\(x\)$', '-sin(x)',
+         'Step 1: Use the rule d/dx[cos(x)] = -sin(x).\nAnswer: -sin(x)'),
+        (r'^tan\(x\)$', 'sec²(x)',
+         'Step 1: Use the rule d/dx[tan(x)] = sec²(x).\nAnswer: sec²(x)'),
+        (r'^e\*\*x$|^exp\(x\)$', 'e^x',
+         'Step 1: Use the rule d/dx[e^x] = e^x.\nAnswer: e^x'),
+        (r'^ln\(x\)$', '1/x',
+         'Step 1: Use the rule d/dx[ln(x)] = 1/x.\nAnswer: 1/x'),
+    ]
+    for pattern, _, steps in elementary:
+        if re.fullmatch(pattern, expr_n):
+            return {'steps': steps, 'topic': 'Derivatives'}
+
+    terms = _parse_polynomial_terms(expr_n)
+    if terms:
+        deriv_terms = []
+        step_lines = ['Step 1: Apply the power rule d/dx[x^n] = n·x^(n-1) term by term:']
+        for coef, power in terms:
+            if power == 0:
+                step_lines.append(f'  • d/dx[{coef}] = 0')
+                continue
+            new_coef = coef * power
+            new_power = power - 1
+            deriv_terms.append((new_coef, new_power))
+            if power == 1:
+                step_lines.append(f'  • d/dx[{_format_polynomial([(coef, power)])}] = {int(new_coef) if new_coef == int(new_coef) else new_coef}')
+            else:
+                step_lines.append(
+                    f'  • d/dx[{_format_polynomial([(coef, power)])}] = '
+                    f'{_format_polynomial([(new_coef, new_power)])}'
+                )
+        result = _format_polynomial(deriv_terms)
+        step_lines.append(f'Step 2: Combine the terms.\nAnswer: {result}')
+        return {'steps': '\n'.join(step_lines), 'topic': 'Derivatives'}
+
+    # Single power: x^n
+    m_pow = re.fullmatch(r'x\*\*(\d+)', expr_n)
+    if m_pow:
+        n = int(m_pow.group(1))
+        new_n = n - 1
+        result = f'{n}x^{new_n}' if new_n > 1 else (f'{n}x' if new_n == 1 else str(n))
+        steps = (
+            f"Step 1: Power rule: d/dx[x^{n}] = {n}·x^{new_n}.\n"
+            f"Answer: {result}"
+        )
+        return {'steps': steps, 'topic': 'Derivatives'}
+
+    m_coef_pow = re.fullmatch(r'([+-]?\d+)\*x\*\*(\d+)', expr_n)
+    if m_coef_pow:
+        a, n = int(m_coef_pow.group(1)), int(m_coef_pow.group(2))
+        result = _format_polynomial([(a * n, n - 1)])
+        steps = (
+            f"Step 1: Power rule: d/dx[{a}x^{n}] = {a}·{n}·x^{n - 1}.\n"
+            f"Answer: {result}"
+        )
+        return {'steps': steps, 'topic': 'Derivatives'}
+
+    return None
+
+
+def _calculus_solution_succeeded(steps: str) -> bool:
+    return bool(re.search(r'\bAnswer:\s*.+', steps, re.IGNORECASE | re.DOTALL))
+
+
+def _limit_response(sol: dict) -> dict:
+    return {
+        'answer': sol['steps'],
+        'source_citation': 'Ethiopian Grade 12 Mathematics Textbook — Limits and Continuity',
+        'source_file': 'grade12_math.pdf',
+        'source_page': '',
+        'source_grade': 12,
+        'section': 'Unit 2: Limits and Continuity',
+        'confidence': 'high',
+        'topic': sol['topic'],
+        'hits': [],
+    }
+
+
+def _derivative_response(sol: dict) -> dict:
+    return {
+        'answer': sol['steps'],
+        'source_citation': (
+            'Ethiopian Grade 12 Mathematics Textbook — Introduction to Differential Calculus'
+        ),
+        'source_file': 'grade12_math.pdf',
+        'source_page': '',
+        'source_grade': 12,
+        'section': 'Unit 3: Introduction to Differential Calculus',
+        'confidence': 'high',
+        'topic': sol['topic'],
+        'hits': [],
+    }
 
 
 # ── Word-Problem Solvers ────────────────────────────────────────────────────────
 
+def _detect_equation_variable(question: str) -> str:
+    """Pick the algebra variable (x/y/z), not filler words like 'i' in 'how do i solve'."""
+    q = question.lower()
+    for v in ('x', 'y', 'z'):
+        if re.search(rf'\bfor\s+{v}\b|{v}\s*[=^]|[\d+\-]\s*{v}\b|{v}\s*[+\-]', q):
+            return v
+    m = re.search(r'([xyz])(?=\s*(?:\^|\*\s*\d|=|[+\-]|\d))', q)
+    if m:
+        return m.group(1)
+    return 'x'
+
+
 def _solve_linear_equation(question: str):
     """Solve a linear equation like '2x + 5 = 15' or 'Solve for x: 3x - 7 = 20'."""
-    # Normalise: handle 'for x', 'for y'
     q = question
-    # Extract RHS
-    m_eq = re.search(r'([\d\.]+)\s*=\s*(.+)', q)
-    if not m_eq:
-        # Try pattern: 'Solve 2x + 5 = 15'
-        m_eq = re.search(r'(?:Solve|find|evaluate)\s+', q, re.IGNORECASE)
-    # Find variable like "solve for x: ..." or "Solve 2x + 5 = 15"
-    var_len = re.search(r'[a-z]\b', q)
-    var = var_len.group(0) if var_len else 'x'
+    var = _detect_equation_variable(q)
 
     # Find the equation string (everything after 'solve / find / for x' etc.)
     eq_str = re.sub(r'.*(?:solve\s+for\s+' + var + r'|solve\s+|find\s+|evaluate\s+|\?|please|help)\s*[:\s]*', '',
@@ -574,7 +1308,7 @@ def _solve_linear_equation(question: str):
                 b_str = m_c.group(2) or '0'
                 # Sum numeric terms in b_str
                 b_raw = re.findall(r'[+-]?\d+\.?\d*', b_str)
-                b = sum(float(x) for x in b_raw) if b_raw else 0.0
+                b = sum(float(x) for x in b_raw) if b_raw else 0.0;
                 answer_val = (rhs - b) / a
         except Exception:
             pass
@@ -607,24 +1341,49 @@ def _solve_linear_equation(question: str):
 def _solve_quadratic(question: str):
     """Solve a quadratic equation like 'x^2 - 5x + 6 = 0'."""
     q = question.lower()
-    # Try to parse coefficients from "ax^2+bx+c=0" (possibly with spaces and ^)
-    eq_part = re.sub(r'.*(?:solve|find|how)\s+', '', q, flags=re.IGNORECASE)
+    eq_part = re.sub(
+        r'.*(?:solve|find|how|factor(?:ing)?|expand|simplify)\s+(?:for\s+x\s*)?',
+        '', q, flags=re.IGNORECASE,
+    )
     eq_part = re.sub(r'[?!.]+$', '', eq_part).strip()
-    # Get "a, b, c" from patterns like x^2 +/- bx +/- c = 0
+    if not eq_part:
+        eq_part = q
+
     a = 1.0
     b = 0.0
     c = 0.0
-    # b term
-    b_m = re.search(r'[+\-]\s*(\d+)\s*x', eq_part)
+
+    # Leading coefficient on x^2 (e.g. 2x^2 ...)
+    a_m = re.search(r'([+-]?\d*\.?\d*)\s*x\s*(?:\^?\s*2|²)', eq_part)
+    if a_m:
+        a_str = (a_m.group(1) or '1').strip()
+        if a_str in ('', '+', '-'):
+            a_str = a_str + '1'
+        try:
+            a = float(a_str)
+        except ValueError:
+            a = 1.0
+
+    # Linear term bx
+    b_m = re.search(r'([+-])\s*(\d+)\s*x(?!\s*(?:\^|²))', eq_part)
     if b_m:
-        b = float(b_m.group(1))
-        if re.match(r'^-\s*\d', eq_part):
+        b = float(b_m.group(2))
+        if b_m.group(1) == '-':
             b = -b
-    # c term (constant)
-    c_m = re.search(r'[+\-]\s*(\d+)\s*=\s*0', eq_part)
+    elif re.search(r'([+-])\s*x(?!\s*(?:\^|²))', eq_part):
+        sign = re.search(r'([+-])\s*x(?!\s*(?:\^|²))', eq_part).group(1)
+        b = -1.0 if sign == '-' else 1.0
+
+    # Constant term (before = or end of string)
+    rhs = eq_part
+    if '=' in eq_part:
+        rhs = eq_part.split('=', 1)[0]
+    c_m = re.search(r'([+-])\s*(\d+)\s*(?:=\s*0)?\s*$', rhs.strip())
+    if not c_m:
+        c_m = re.search(r'([+-])\s*(\d+)(?!\s*x)', rhs)
     if c_m:
-        c = float(c_m.group(1))
-        if re.search(r'[+\-]\s*-' + c_m.group(1), eq_part):
+        c = float(c_m.group(2))
+        if c_m.group(1) == '-':
             c = -c
 
     # Discriminant
@@ -835,21 +1594,7 @@ def generate_math_answer(
 
     # ── 2. Scope check ────────────────────────────────────────────────────────
     if is_non_math_question(q) and not is_math_question(q):
-        return {
-            'answer': (
-                "I'm sorry, I can only help with Grade 9-12 mathematics from your textbooks.\n\n"
-                "I can help you with:\n"
-                "• Algebra\n"
-                "• Limits\n"
-                "• Derivatives\n"
-                "• Integration\n"
-                "• Word problems\n\n"
-                "Please ask a math question from your studies!"
-            ),
-            'source_citation': '', 'source_file': '', 'source_page': '',
-            'source_grade': None, 'section': '',
-            'confidence': 'high', 'topic': 'scope', 'hits': [],
-        }
+        return _out_of_scope_response('scope')
 
     # ── 3. Word-problem routing ────────────────────────────────────────────────
     wp = detect_and_solve_word_problem(q)
@@ -867,87 +1612,101 @@ def generate_math_answer(
             'hits': [],
         }
 
-    # ── 4. Simple equation / quadratic routing ────────────────────────────────
-    # Solve "Solve x + 5 = 15" type questions
-    if re.search(r'\b(solve)\b.*[+\-*]', q, re.IGNORECASE):
-        sol = _solve_linear_equation(q)
-        return {
-            'answer': sol['steps'],
-            'source_citation': ('Extreme Mathematics: Grade 9 & 10 (Ethiopia MOE), '
-                                'Chapter 2: Linear Equations'),
-            'source_file': 'Extreme Mathematics Grade 9&10.pdf',
-            'source_page': '',
-            'source_grade': 9,
-            'section': 'Chapter 2: Linear Equations',
-            'confidence': 'high',
-            'topic': sol['topic'],
-            'hits': [],
-        }
+    # ── 4a. Limits & derivatives (before algebra — x² appears in both) ───────
+    if _should_route_to_limit(q):
+        sol_lim = _solve_limit(q)
+        if sol_lim and _calculus_solution_succeeded(sol_lim['steps']):
+            return _limit_response(sol_lim)
 
-    # Add special case for quadratic equations
-    if re.search(r'\b(quadratic|factor)\b', q, re.IGNORECASE) and \
-            re.search(r'[=0]+$', q):
+    if _should_route_to_derivative(q):
+        sol_der = _solve_derivative(q)
+        if sol_der and _calculus_solution_succeeded(sol_der['steps']):
+            return _derivative_response(sol_der)
+
+    # ── 4b. Equation solvers (linear & quadratic) ───────────────────────────
+    if _should_route_to_quadratic(q):
         solq = _solve_quadratic(q)
-        return {
-            'answer': solq['steps'],
-            'source_citation': ('Extreme Mathematics: Grade 9 & 10 (Ethiopia MOE), '
-                                'Chapter 3: Quadratic Equations'),
-            'source_file': 'Extreme Mathematics Grade 9&10.pdf',
-            'source_page': '',
-            'source_grade': 9,
-            'section': 'Chapter 3: Quadratic Equations',
-            'confidence': 'high',
-            'topic': solq['topic'],
-            'hits': [],
-        }
+        if solq.get('steps'):
+            return {
+                'answer': solq['steps'],
+                'source_citation': ('Extreme Mathematics: Grade 9 & 10 (Ethiopia MOE), '
+                                    'Chapter 3: Quadratic Equations'),
+                'source_file': 'Extreme Mathematics Grade 9&10.pdf',
+                'source_page': '',
+                'source_grade': 9,
+                'section': 'Chapter 3: Quadratic Equations',
+                'confidence': 'high',
+                'topic': solq['topic'],
+                'hits': [],
+            }
+
+    if _should_route_to_linear_solver(q):
+        sol = _solve_linear_equation(q)
+        if _linear_solution_succeeded(sol['steps']):
+            return {
+                'answer': sol['steps'],
+                'source_citation': ('Extreme Mathematics: Grade 9 & 10 (Ethiopia MOE), '
+                                    'Chapter 2: Linear Equations'),
+                'source_file': 'Extreme Mathematics Grade 9&10.pdf',
+                'source_page': '',
+                'source_grade': 9,
+                'section': 'Chapter 2: Linear Equations',
+                'confidence': 'high',
+                'topic': sol['topic'],
+                'hits': [],
+            }
 
     # ── 5. Textbook search: ALL 6 books ──────────────────────────────────────
+    detected_topic = _detect_math_topic(q)
     keywords = _keyword_hints(q)
     search_query = keywords if keywords else q
 
-    all_hits = search_all_books(search_query, grade_level, k_per_phase=max_hits)
-    if not all_hits:
-        # Try broader query (first 3 tokens of question stripped of stop words)
-        tokens = re.findall(r'[a-z0-9_.-]+', q)
-        broad = ' '.join(tokens[:3])
-        if broad != search_query:
-            all_hits = search_all_books(broad, grade_level, k_per_phase=max_hits)
+    try:
+        all_hits = search_curriculum_content(search_query, grade_level, k=max_hits)
+        if not all_hits:
+            tokens = re.findall(r'[a-z0-9_.-]+', q.lower())
+            broad = ' '.join(tokens[:3])
+            if broad != search_query:
+                all_hits = search_curriculum_content(broad, grade_level, k=max_hits)
+    except Exception:
+        all_hits = []
 
     if not all_hits:
-        return {
-            'answer': (
-                f"I searched all 6 of your mathematics textbooks but couldn't find information about "
-                f"'{question.strip()}.\n\n"
-                "I can help you with topics from your curriculum like:\n"
-                "• Algebra (equations, functions, quadratics)\n"
-                "• Limits and continuity\n"
-                "• Derivatives and calculus\n"
-                "• Integration\n"
-                "• Word problems\n\n"
-                "Could you please rephrase your question or ask about a different topic from your textbook?"
-            ),
-            'source_citation': '', 'source_file': '', 'source_page': '',
-            'source_grade': None, 'section': '',
-            'confidence': 'high', 'topic': 'not_found', 'hits': [],
-        }
+        return _out_of_scope_response('not_found')
+
+    top_sim = all_hits[0].get('similarity', 0)
+    if top_sim < MIN_RELEVANCE_SIMILARITY:
+        return _out_of_scope_response('not_found')
+
+    all_hits = _filter_relevant_hits(all_hits, q, detected_topic)
+    if not all_hits:
+        return _out_of_scope_response('not_found')
+
+    top_sim = all_hits[0].get('similarity', 0)
+    if top_sim < MIN_RELEVANCE_SIMILARITY:
+        return _out_of_scope_response('not_found')
 
     from curriculum_extractor import extract_content
     chunks = [{'text': h.get('text', ''), 'source': h.get('source', ''), 'page': h.get('page', '')}
               for h in all_hits]
-    extracted = extract_content(chunks)
+    topic_label = detected_topic if detected_topic != 'general' else _keyword_hints(q)
+    extracted = extract_content(chunks, topic_hint=topic_label or q)
+    if not extracted.get('explanation') and not extracted.get('formulas') and \
+            not extracted.get('worked_examples') and not extracted.get('examples'):
+        return _out_of_scope_response('not_found')
+
     cite = build_citation_from_hits(all_hits)
     if extracted.get('source_citation'):
         cite['source_citation'] = extracted['source_citation']
     explanation = build_assistant_answer(extracted, q)
 
     # Confidence: based on top-hit similarity
-    top_sim = all_hits[0]['similarity'] if all_hits else 0
     if top_sim >= 75:
         confidence = 'high'
-    elif top_sim >= 50:
+    elif top_sim >= 55:
         confidence = 'medium'
     else:
-        confidence = 'low'
+        return _out_of_scope_response('not_found')
 
     # Add follow-up
     follow_up = "\n\nWould you like to practice a similar problem?"
@@ -961,7 +1720,7 @@ def generate_math_answer(
         'source_grade': cite.get('source_grade'),
         'section':      cite.get('section', ''),
         'confidence':   confidence,
-        'topic':        _detect_math_topic(q),
+        'topic':        detected_topic,
         'hits':         all_hits,
     }
 

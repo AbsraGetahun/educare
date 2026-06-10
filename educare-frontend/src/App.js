@@ -12,6 +12,9 @@ import TeacherDashboard from './pages/TeacherDashboard';
 import FamilyDashboard from './pages/FamilyDashboard';
 import AdminDashboard from './pages/AdminDashboard';
 import QuizTaking from './pages/QuizTaking';
+import VerifyEmail from './pages/VerifyEmail';
+import ForgotPassword from './pages/ForgotPassword';
+import Profile from './pages/Profile';
 function App() {
   const [token, setToken] = useState(localStorage.getItem('token'));
   const [role, setRole] = useState(localStorage.getItem('role'));
@@ -80,6 +83,18 @@ function App() {
         <Route 
           path="/quiz/:quizId" 
           element={token && role === 'student' ? <QuizTaking /> : <Navigate to="/student/login" />} 
+        />
+
+        {/* Email Verification (public) */}
+        <Route path="/verify-email" element={<VerifyEmail />} />
+
+        {/* Forgot Password (public) */}
+        <Route path="/forgot-password" element={<ForgotPassword />} />
+
+        {/* Profile (protected for logged in users) */}
+        <Route 
+          path="/profile" 
+          element={token ? <Profile /> : <Navigate to="/student/login" />} 
         />
         
         {/* Fallback Route */}

@@ -1,7 +1,9 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, Link } from 'react-router-dom';
 import { getQuizzes, getApprovedMaterials, getProgressMap, getAvailableTopics, getStudentRecommendations, getCompletedQuizzes, rateMaterial } from '../services/api';
 import StudentAssistant from '../components/StudentAssistant';
+import PeerHelpBoard from '../components/PeerHelpBoard';
+import MathContent from '../components/MathContent';
 
 // ── MaterialCard: renders RAG-generated HTML material with interactive questions ──
 function MaterialCard({ material }) {
@@ -74,19 +76,23 @@ function MaterialCard({ material }) {
         </div>
         {/* Source tracking section */}
         {(material.source_file || material.source_citation) && (
-          <div className="px-4 border-b border-gray-100 bg-gray-50 py-2">
+          <div className="mt-2 px-3 py-2 rounded-md bg-gray-50 border border-gray-100">
+            <p className="text-[10px] font-semibold text-gray-500 uppercase tracking-wide mb-1">Source</p>
             {material.source_file && (
-              <div className="flex items-center gap-2 mb-1">
+              <div className="flex items-center gap-2 flex-wrap mb-1">
                 <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-emerald-100 text-emerald-700 font-medium">
                   {material.source_file}
                 </span>
                 {material.source_page && (
                   <span className="text-[10px] text-gray-500">Page {material.source_page}</span>
                 )}
+                {material.section_title && (
+                  <span className="text-[10px] text-gray-500">{material.section_title}</span>
+                )}
               </div>
             )}
-            {material.source_citation && !material.source_file && (
-              <p className="text-[10px] text-gray-400 italic">Source: {material.source_citation}</p>
+            {material.source_citation && (
+              <p className="text-[10px] text-gray-500 italic">{material.source_citation}</p>
             )}
           </div>
         )}
@@ -94,9 +100,9 @@ function MaterialCard({ material }) {
 
       {/* Curriculum context (explanation, formulas, examples) */}
       {contextHtml && contextHtml.trim() !== '' && (
-        <div
-          className="p-4 border-b border-gray-100 bg-blue-50 text-sm text-gray-700 rag-content"
-          dangerouslySetInnerHTML={{ __html: contextHtml }}
+        <MathContent
+          html={contextHtml}
+          className="p-4 border-b border-gray-100 bg-blue-50 text-sm text-gray-700"
         />
       )}
 
@@ -227,7 +233,7 @@ function StudentDashboard() {
       try {
         const [quizzesData, materialsData, progressData, topicsData, recsData, completedData] = await Promise.all([
           getQuizzes(),
-          getApprovedMaterials(userId),
+          getApprovedMaterials(parseInt(userId, 10)),
           getProgressMap(userId),
           getAvailableTopics(userId),
           getStudentRecommendations(userId),
@@ -251,7 +257,7 @@ function StudentDashboard() {
 
   const handleLogout = () => {
     localStorage.clear();
-    navigate('/login');
+    navigate('/');
   };
 
   const getColorClasses = (color) => {
@@ -302,15 +308,21 @@ function StudentDashboard() {
             </div>
             <span className="text-base font-bold text-gray-900">EDUCARE</span>
           </div>
-          <div className="flex items-center gap-3">
-            <span className="text-sm text-gray-600 hidden sm:block">{fullName}</span>
-            <button
-              onClick={handleLogout}
-              className="text-sm text-gray-500 hover:text-red-600 px-3 py-1.5 rounded-md hover:bg-red-50 transition font-medium"
-            >
-              Logout
-            </button>
-          </div>
+           <div className="flex items-center gap-3">
+             <span className="text-sm text-gray-600 hidden sm:block">{fullName}</span>
+             <Link 
+               to="/profile" 
+               className="text-sm px-3 py-1.5 rounded-md text-blue-600 hover:bg-blue-50 font-medium"
+             >
+               Profile
+             </Link>
+             <button
+               onClick={handleLogout}
+               className="text-sm text-gray-500 hover:text-red-600 px-3 py-1.5 rounded-md hover:bg-red-50 transition font-medium"
+             >
+               Sign Out
+             </button>
+           </div>
         </div>
       </nav>
 
@@ -322,6 +334,7 @@ function StudentDashboard() {
               { key: 'progress', label: 'Progress Map' },
               { key: 'quizzes', label: 'Quizzes' },
               { key: 'materials', label: 'Materials' },
+              { key: 'peer', label: 'Peer Help' },
             ].map((tab) => (
               <button
                 key={tab.key}
@@ -635,6 +648,11 @@ function StudentDashboard() {
               </div>
             )}
           </div>
+        )}
+
+        {/* Peer Help Tab */}
+        {activeTab === 'peer' && (
+          <PeerHelpBoard studentId={parseInt(userId, 10)} fullName={fullName} />
         )}
       </div>
 

@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { askAssistant, getAssistantHistory, clearAssistantHistory } from '../services/api';
+import MathText from './MathText';
 
 const STORAGE_KEY = 'educare_assistant_open';
 const SUGGESTED_QUESTIONS = [
@@ -280,7 +281,11 @@ function StudentAssistant({ studentId, fullName }) {
                       isUser ? 'chat-bubble-user rounded-br-md' : 'chat-bubble-bot rounded-bl-md'
                     }`}
                   >
-                    <p>{content}</p>
+                    {isUser ? (
+                      <p>{content}</p>
+                    ) : (
+                      <MathText text={content} />
+                    )}
                     {!isUser && (msg.confidence === 'high' || msg.source || msg.topic) && (
                       <div className="chat-source-tag">
                         {msg.topic             && <span className="font-semibold text-blue-600">{msg.topic}</span>}

@@ -28,7 +28,12 @@ function StudentLogin() {
         setError('Access denied. Student account required.');
       }
     } catch (err) {
-      setError(err.response?.data?.error || 'Login failed');
+      const resp = err.response?.data;
+      if (resp?.requires_verification) {
+        setError('Please verify your email before logging in. Check your inbox (and spam).');
+      } else {
+        setError(resp?.error || 'Login failed');
+      }
     } finally {
       setLoading(false);
     }
@@ -93,6 +98,12 @@ function StudentLogin() {
             >
               {loading ? 'Signing in...' : 'Sign In'}
             </button>
+
+            <div className="mt-3 text-right">
+              <Link to="/forgot-password" className="text-sm text-blue-600 hover:underline">
+                Forgot password?
+              </Link>
+            </div>
           </form>
         
           <div className="mt-6 text-center">

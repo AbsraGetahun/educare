@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { getQuizById, submitQuiz } from '../services/api';
+import { resolveUploadUrl } from '../utils/uploadUrl';
 
 function QuizTaking() {
   const { quizId } = useParams();
@@ -83,10 +84,10 @@ function QuizTaking() {
             {/* Score */}
             <div className="text-center mb-6">
               <div className="text-5xl font-bold text-blue-600 mb-2">
-                {result.score}/{result.total_possible}
+                {result.score}/{result.total_marks ?? result.total_possible}
               </div>
               <div className="text-lg text-gray-600">
-                {result.percentage.toFixed(0)}% Score
+                {Math.min(100, Number(result.percentage) || 0).toFixed(0)}% Score
               </div>
               <div className={`inline-block mt-2 px-4 py-2 rounded-full text-sm font-medium ${
                 result.percentage >= 70 ? 'bg-green-100 text-green-800' : 'bg-yellow-100 text-yellow-800'
@@ -162,6 +163,15 @@ function QuizTaking() {
           <div className="mb-4 text-sm text-gray-500">Question {currentQuestion + 1} of {quiz.questions.length}</div>
           <div className="mb-6">
             <h3 className="text-lg font-semibold mb-4">{currentQ.question_text}</h3>
+            {currentQ.question_image && (
+              <div className="mb-4 flex justify-center bg-gray-50 rounded-lg p-3 border border-gray-200">
+                <img
+                  src={resolveUploadUrl(currentQ.question_image)}
+                  alt="Question diagram"
+                  className="max-w-full max-h-96 w-auto h-auto object-contain rounded-md"
+                />
+              </div>
+            )}
             <div className="space-y-3">
               {currentQ.options.map((option, idx) => {
                 const letter = String.fromCharCode(65 + idx);

@@ -5,6 +5,7 @@ from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from datetime import datetime, timedelta
 import uuid
+from typing import Optional
 
 VERIFICATION_TOKEN_EXPIRY_HOURS = int(os.getenv('VERIFICATION_TOKEN_EXPIRY_HOURS', '24'))
 BASE_URL = os.getenv('BASE_URL', 'http://localhost:3000')
@@ -61,7 +62,7 @@ def get_rate_limit_remaining(email: str) -> int:
         return max(0, _MAX_PER_HOUR - len(hist))
 
 
-def get_rate_limit_reset_in(email: str) -> int | None:
+def get_rate_limit_reset_in(email: str):
     """Return seconds until the rate-limit window resets (first old entry expires)."""
     now = datetime.now()
     with _rate_lock:
@@ -95,6 +96,8 @@ def send_with_rate_limit(email: str, subject: str, html_body: str, text_body: st
         raise ValueError(
             "SMTP credentials not configured. Set SMTP_HOST, SMTP_PORT, SMTP_USER, and SMTP_PASSWORD environment variables."
         )
+
+    print(f"[DEBUG] Sending email via SMTP to {email} from {SMTP_USER}")
 
     if not check_rate_limit(email):
         raise RateLimitError(
@@ -225,3 +228,71 @@ def send_welcome_email(email, full_name, role):
         subject=f'Welcome to EDUCARE!',
         html_body=html_content,
     )
+
+
+def send_password_reset_otp(email, full_name, otp):
+    """Send 6-digit OTP for password reset. Valid 10 minutes."""
+    html_content = f"""
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <meta charset="utf-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    </head>
+    <body style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; color: #333;">
+        <div style="background: linear-gradient(135deg, #2563eb 0%, #1d4ed8 100%); padding: 20px; border-radius: 10px 10px 0 0;">
+            <h1 style="color: white; margin: 0;">EDUCARE</h1>
+        </div>
+        
+        <div style="background: #f9fafb; padding: 30px; border-radius: 0 0 10px 10px; border: 1px solid #e5e7eb; border-top: none;">
+            <h2 style="color: #1f2937; margin-top: 0;">Reset Your Password</h2>
+            
+            <p>Hello <strong>{full_name or 'User'}</strong>,</p>
+            
+            <p>We received a request to reset your EDUCARE password. Use the following One-Time Password (OTP) to proceed:</p>
+            
+            <div style="text-align: center; margin: 30px 0;">
+                <div style="display: inline-block; background: #1f2937; color: white; font-size: 32px; font-weight: bold; letter-spacing: 8px; padding: 15px 30px; border-radius: 8px; font-family: 'Courier New', monospace;">
+                    {otp}
+                </div>
+            </div>
+            
+            <div style="background: #fef3c7; border: 1px solid #f59e0b; border-radius: 6px; padding: 15px; margin: 20px 0;">
+                <p style="margin: 0; font-size: 14px; color: #92400e;">
+                    <strong>Important:</strong> This OTP is valid for <strong>10 minutes</strong> and can be used up to <strong>3 times</strong>. If you did not request a password reset, please ignore this email or contact support.
+                </p>
+            </div>
+            
+            <p style="font-size: 14px; color: #6b7280; margin-top: 30px;">
+                Best regards,<br>
+                The EDUCARE Team
+            </p>
+        </div>
+        
+        <div style="text-align: center; padding: 20px; color: #9ca3af; font-size: 12px;">
+            <p>This is an automated message from EDUCARE. Please do not reply to this email.</p>
+        </div>
+    </body>
+    </html>
+    """
+    
+    text_content = f"""
+    Hello {full_name or 'User'},
+
+    Use this OTP to reset your EDUCARE password: {otp}
+
+    This OTP is valid for 10 minutes and can be used up to 3 times.
+
+    If you did not request this, ignore this email.
+
+    Best regards,
+    The EDUCARE Team
+    """
+    
+    ok = send_with_rate_limit(
+        email,
+        subject='Password Reset OTP - EDUCARE',
+        html_body=html_content,
+        text_body=text_content
+    )
+    return ok
