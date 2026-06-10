@@ -108,7 +108,7 @@ db_config = {
 
 # Function to get database connection
 def get_db_connection():
-    return MySQLdb.connect(**db_config)
+    return pymysql.connect(**db_config)
 
 
 # ==================== STRONG PASSWORD RULES ====================
