@@ -1,7 +1,8 @@
 from flask import Flask, jsonify, request, Response
 from flask_cors import CORS
 from flask_jwt_extended import create_access_token, JWTManager, jwt_required, get_jwt_identity
-import MySQLdb
+import pymysql
+pymysql.install_as_MySQLdb()
 import random
 import json
 import os
