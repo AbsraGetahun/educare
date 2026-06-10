@@ -1,3 +1,11 @@
+
+node_modules/
+venv/
+build/
+__pycache__/
+.env
+uploads/
+faiss_index/
 venv/ 
 __pycache__/ 
 *.pyc 
