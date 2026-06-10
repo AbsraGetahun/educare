@@ -98,15 +98,15 @@ app.config['JWT_ACCESS_TOKEN_EXPIRES'] = False  # tokens don't expire in dev
 jwt = JWTManager(app)
 
 # Database configuration (overrideable via .env)
-
 db_config = {
     'host': os.getenv('MYSQL_HOST'),
     'user': os.getenv('MYSQL_USER'),
     'password': os.getenv('MYSQL_PASSWORD'),
     'database': os.getenv('MYSQL_DB'),
-    'charset': 'utf8mb4'
+    'port': int(os.getenv('MYSQL_PORT', 25901)),
+    'charset': 'utf8mb4',
+    'ssl': {'ca': '/opt/render/project/src/ca.pem'}  # Render path
 }
-
 def get_db_connection():
     return pymysql.connect(**db_config)
 
