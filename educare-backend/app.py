@@ -103,7 +103,7 @@ db_config = {
     'user': os.getenv('MYSQL_USER'),
     'password': os.getenv('MYSQL_PASSWORD'),
     'database': os.getenv('MYSQL_DB'),
-    'port': int(os.getenv('MYSQL_PORT', 25901)),
+    'port': 25901,
     'charset': 'utf8mb4',
     'ssl': {'ca': '/opt/render/project/src/ca.pem'}  # Render path
 }
