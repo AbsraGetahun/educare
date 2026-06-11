@@ -105,11 +105,10 @@ db_config = {
     'database': os.getenv('MYSQL_DB'),
     'port': int(os.getenv('MYSQL_PORT', 3306)),
     'charset': 'utf8mb4',
-    'ssl': {'ca': '/opt/render/project/src/ca.pem'}
+    'ssl': {'ca': '/opt/render/project/src/ca.pem'}  # Path to the secret file
 }
 def get_db_connection():
     return pymysql.connect(**db_config)
-
 
 # ==================== STRONG PASSWORD RULES ====================
 PASSWORD_RULES = {
