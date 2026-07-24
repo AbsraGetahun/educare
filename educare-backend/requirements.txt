@@ -14,4 +14,4 @@ PyMySQL==1.1.2
 typing_extensions==4.15.0
 Werkzeug==3.1.7
 zipp==3.23.0
-gunicorngunicorn==21.2.0 
+gunicorn==21.2.0 
