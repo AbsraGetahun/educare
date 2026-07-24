@@ -84,6 +84,10 @@ except Exception as e:
     def get_token_expiry(): return datetime.now() + timedelta(hours=24)
 
 app = Flask(__name__)
+@app.route('/health')
+def health():
+    return jsonify({"status": "healthy", "message": "EDUCARE API is running!"})
+
 CORS(app,
      origins=["http://localhost:3000", "http://127.0.0.1:3000", "http://localhost:3001", "http://127.0.0.1:3001"],
      supports_credentials=True,
