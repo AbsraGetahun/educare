@@ -88,15 +88,7 @@ app = Flask(__name__)
 def health():
     return jsonify({"status": "healthy", "message": "EDUCARE API is running!"})
 
-CORS(app,
-     origins=["http://localhost:3000", "http://127.0.0.1:3000", "http://localhost:3001", "http://127.0.0.1:3001"],
-     supports_credentials=True,
-     methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-     allow_headers=["Content-Type", "Authorization", "Accept", "X-Requested-With"],
-     expose_headers=["Content-Type", "Authorization"],
-     max_age=3600)
-
-# JWT Configuration
+CORS(app, resources={r"/*": {"origins": "*"}})# JWT Configuration
 app.config['JWT_SECRET_KEY'] = os.getenv('JWT_SECRET_KEY', 'educare-secret-key')
 app.config['JWT_ACCESS_TOKEN_EXPIRES'] = False  # tokens don't expire in dev
 jwt = JWTManager(app)
