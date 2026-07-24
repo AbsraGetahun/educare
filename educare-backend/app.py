@@ -99,13 +99,12 @@ jwt = JWTManager(app)
 
 # Database configuration (overrideable via .env)
 db_config = {
-    'host': os.getenv('MYSQL_HOST'),
-    'user': os.getenv('MYSQL_USER'),
-    'password': os.getenv('MYSQL_PASSWORD'),
-    'database': os.getenv('MYSQL_DB'),
-    'port': int(os.getenv('MYSQL_PORT', 3306)),
+    'host': os.getenv('DB_HOST', os.getenv('MYSQL_HOST', 'localhost')),
+    'user': os.getenv('DB_USER', os.getenv('MYSQL_USER', 'root')),
+    'password': os.getenv('DB_PASSWORD', os.getenv('MYSQL_PASSWORD', '')),
+    'database': os.getenv('DB_NAME', os.getenv('MYSQL_DB', 'educare')),
+    'port': int(os.getenv('DB_PORT', os.getenv('MYSQL_PORT', 3306))),
     'charset': 'utf8mb4',
-    'ssl': {'ca': '/opt/render/project/src/ca.pem'}  # Path to the secret file
 }
 def get_db_connection():
     return pymysql.connect(**db_config)
