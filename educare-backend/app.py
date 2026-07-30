@@ -84,11 +84,16 @@ except Exception as e:
     def get_token_expiry(): return datetime.now() + timedelta(hours=24)
 
 app = Flask(__name__)
+
+# ==================== HEALTH CHECK ====================
 @app.route('/health')
 def health():
     return jsonify({"status": "healthy", "message": "EDUCARE API is running!"})
 
-CORS(app, resources={r"/*": {"origins": "*"}})# JWT Configuration
+# ==================== CORS CONFIGURATION ====================
+CORS(app, resources={r"/*": {"origins": "*"}})
+
+# ==================== JWT CONFIGURATION ====================
 app.config['JWT_SECRET_KEY'] = os.getenv('JWT_SECRET_KEY', 'educare-secret-key')
 app.config['JWT_ACCESS_TOKEN_EXPIRES'] = False  # tokens don't expire in dev
 jwt = JWTManager(app)
@@ -587,13 +592,14 @@ def login():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
+# ==================== REGISTER ENDPOINT (FIXED) ====================
 @app.route('/api/register', methods=['POST'])
 def register():
     try:
         data = request.get_json()
         full_name = data.get('full_name')
         email = data.get('email')
-        username = data.get('email')
+        username = data.get('email')  # Use email as username
         password = data.get('password')
         grade_level = data.get('grade_level')
         section = data.get('section')
@@ -648,11 +654,12 @@ def register():
         verification_token = generate_verification_token()
         token_expiry = get_token_expiry()
 
+        # ✅ FIXED: 8 columns, 8 values
         cursor.execute(
             """INSERT INTO users 
                (username, full_name, email, password, role, is_verified, verification_token, token_expiry) 
-               VALUES (%s, %s, %s, 'student', FALSE, %s, %s)""",
-            (username, full_name, email, hashed_password, verification_token, token_expiry)
+               VALUES (%s, %s, %s, %s, %s, %s, %s, %s)""",
+            (username, full_name, email, hashed_password, 'student', 0, verification_token, token_expiry)
         )
         user_id = int(cursor.lastrowid)
 
