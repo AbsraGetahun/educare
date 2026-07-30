@@ -1559,7 +1559,7 @@ def family_register():
     cursor = None
     try:
         data = request.get_json(silent=True) or {}
-        print(f"[DEBUG FAMILY] Received data: {data}")  # ← DEBUG LOG
+        print(f"[DEBUG FAMILY] Received data: {data}")
         
         full_name = (data.get('full_name') or '').strip()
         email = (data.get('email') or '').strip().lower()
@@ -1568,7 +1568,7 @@ def family_register():
         student_email = (data.get('student_email') or '').strip().lower()
         relationship = (data.get('relationship') or 'parent').strip() or 'parent'
         
-        print(f"[DEBUG FAMILY] full_name={full_name}, email={email}, student_id={student_id}, relationship={relationship}")  # ← DEBUG LOG
+        print(f"[DEBUG FAMILY] full_name={full_name}, email={email}, student_id={student_id}, relationship={relationship}")
         
         if not full_name or not email or not password or (not student_id and not student_email):
             return jsonify({"error": "All fields required"}), 400
@@ -1604,7 +1604,8 @@ def family_register():
                 cursor.close()
                 conn.close()
                 return jsonify({"error": "student_id must be a number"}), 400
-            cursor.execute("SELECT student_id FROM students WHERE user_id = %s", (student_id,))
+            # ✅ FIXED: Changed 'student_id' to 'id' in the SELECT statement
+            cursor.execute("SELECT id FROM students WHERE user_id = %s", (student_id,))
             row = cursor.fetchone()
             if not row:
                 cursor.close()
@@ -1620,7 +1621,8 @@ def family_register():
                 conn.close()
                 return jsonify({"error": "Student with this email not found"}), 400
             student_user_id = int(student[0])
-            cursor.execute("SELECT student_id FROM students WHERE user_id = %s", (student_user_id,))
+            # ✅ FIXED: Changed 'student_id' to 'id' in the SELECT statement
+            cursor.execute("SELECT id FROM students WHERE user_id = %s", (student_user_id,))
             row = cursor.fetchone()
             if not row:
                 cursor.close()
@@ -1701,7 +1703,7 @@ def family_register():
         
     except Exception as e:
         print(f"[ERROR FAMILY] Registration failed: {e}")
-        traceback.print_exc()  # ← This prints the FULL error
+        traceback.print_exc()
         if conn:
             try:
                 conn.rollback()
@@ -1960,8 +1962,7 @@ def get_family_student_recommendations(student_id):
             topic_id = topic['topic_id']
             avg_score = topic['avg_score']
             cursor.execute(f"""
-                SELECT q.quiz_id, q.title, q.total_marks
-                FROM quizzes q
+                SELECT q.quiz_id, q.title, q.total_marks                FROM quizzes q
                 WHERE q.topic_id = %s
                 AND q.quiz_id NOT IN (
                     SELECT qa.quiz_id
