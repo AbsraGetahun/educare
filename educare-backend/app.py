@@ -10,6 +10,7 @@ from datetime import datetime, timedelta
 import re
 import secrets
 import traceback
+
 # Simple .env loader (no extra deps)
 def load_dotenv_file(path='.env'):
     if not os.path.exists(path):
@@ -103,7 +104,7 @@ db_config = {
     'host': os.getenv('DB_HOST', os.getenv('MYSQL_HOST', 'localhost')),
     'user': os.getenv('DB_USER', os.getenv('MYSQL_USER', 'root')),
     'password': os.getenv('DB_PASSWORD', os.getenv('MYSQL_PASSWORD', '')),
-    'database': os.getenv('DB_NAME', os.getenv('MYSQL_DB', 'educare')),
+    'database': os.getenv('DB_NAME', os.getenv('MYSQL_DB', 'railway')),
     'port': int(os.getenv('DB_PORT', os.getenv('MYSQL_PORT', 3306))),
     'charset': 'utf8mb4',
 }
@@ -591,24 +592,23 @@ def login():
         
     except Exception as e:
         return jsonify({"error": str(e)}), 500
-# ==================== REGISTER ENDPOINT (FIXED) ====================
+
+# ==================== REGISTER ENDPOINT (FIXED - AUTO-VERIFIED) ====================
 @app.route('/api/register', methods=['POST'])
 def register():
     try:
         data = request.get_json()
-        print(f"[DEBUG] Registration data received: {data}")  # Debug log
+        print(f"[DEBUG] Registration data received: {data}")
         
         # Get all fields with proper default values
-        full_name = data.get('full_name', '').strip() or ''  # ← FIXED: Ensures empty string if None
+        full_name = data.get('full_name', '').strip() or ''
         email = data.get('email', '').strip()
-        username = email  # Use email as username
+        username = email
         password = data.get('password', '')
         grade_level = data.get('grade_level')
         section = data.get('section', '').strip()
         
         # Validate required fields
-        if not full_name:
-            full_name = ''  # Ensure it's never None
         if not email:
             return jsonify({"error": "Email is required"}), 400
         if not password:
@@ -653,14 +653,14 @@ def register():
 
         # DEBUG: Print what we're about to insert
         print(f"[DEBUG] Inserting: username={username}, full_name={full_name}, email={email}")
-        print(f"[DEBUG] Values: hashed_password={hashed_password[:10]}..., role=student, is_verified=0")
+        print(f"[DEBUG] Values: hashed_password={hashed_password[:10]}..., role=student, is_verified=1")
 
-        # ✅ FIXED: 8 columns, 8 values - full_name is never None
+        # ✅ FIXED: Auto-verified (is_verified = 1)
         cursor.execute(
             """INSERT INTO users 
                (username, full_name, email, password, role, is_verified, verification_token, token_expiry) 
                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)""",
-            (username, full_name, email, hashed_password, 'student', 0, verification_token, token_expiry)
+            (username, full_name, email, hashed_password, 'student', 1, verification_token, token_expiry)
         )
         user_id = int(cursor.lastrowid)
 
@@ -673,16 +673,11 @@ def register():
         cursor.close()
         conn.close()
 
-        # Send real verification email (never auto-verify)
+        # No email verification needed
         email_sent = False
-        if EMAIL_AVAILABLE:
-            try:
-                email_sent = send_verification_email(email, full_name, verification_token)
-            except Exception as em:
-                print(f"Verification email failed: {em}")
 
         return jsonify({
-            "message": "Account created! Please check your email for the verification link (expires in 24 hours).",
+            "message": "Account created successfully! You can now login.",
             "user_id": user_id,
             "full_name": full_name,
             "email": email,
@@ -693,73 +688,7 @@ def register():
         
     except Exception as e:
         print(f"[ERROR] Registration failed: {e}")
-        import traceback
-        traceback.print_exc()  # ← This prints the FULL error to logs
-        return jsonify({"error": str(e)}), 500
-        # Hash the password using bcrypt
-        if BCRYPT_AVAILABLE and bcrypt:
-            hashed_password = bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
-        else:
-            hashed_password = password
-
-        conn = get_db_connection()
-        cursor = conn.cursor()
-
-        cursor.execute("SELECT user_id FROM users WHERE email = %s", (email,))
-        if cursor.fetchone():
-            cursor.close()
-            conn.close()
-            return jsonify({"error": "Email already registered"}), 400
-
-        # Enforce strong password
-        is_strong, pw_errors, strength = validate_strong_password(password)
-        if not is_strong:
-            cursor.close()
-            conn.close()
-            return jsonify({"error": "Weak password", "errors": pw_errors, "strength": strength}), 400
-
-        # Generate verification token (24h expiry)
-        verification_token = generate_verification_token()
-        token_expiry = get_token_expiry()
-
-        # ✅ FIXED: 8 columns, 8 values - full_name is never None
-        cursor.execute(
-            """INSERT INTO users 
-               (username, full_name, email, password, role, is_verified, verification_token, token_expiry) 
-               VALUES (%s, %s, %s, %s, %s, %s, %s, %s)""",
-            (username, full_name, email, hashed_password, 'student', 0, verification_token, token_expiry)
-        )
-        user_id = int(cursor.lastrowid)
-
-        cursor.execute(
-            "INSERT INTO students (user_id, grade_level, section, enrollment_date) VALUES (%s, %s, %s, CURDATE())",
-            (user_id, grade_level, section)
-        )
-        
-        conn.commit()
-        cursor.close()
-        conn.close()
-
-        # Send real verification email (never auto-verify)
-        email_sent = False
-        if EMAIL_AVAILABLE:
-            try:
-                email_sent = send_verification_email(email, full_name, verification_token)
-            except Exception as em:
-                print(f"Verification email failed: {em}")
-
-        return jsonify({
-            "message": "Account created! Please check your email for the verification link (expires in 24 hours).",
-            "user_id": user_id,
-            "full_name": full_name,
-            "email": email,
-            "role": "student",
-            "email_sent": email_sent,
-            "strength": strength
-        }), 201
-        
-    except Exception as e:
-        print(f"[ERROR] Registration failed: {e}")  # Debug log
+        traceback.print_exc()
         return jsonify({"error": str(e)}), 500
 
 
