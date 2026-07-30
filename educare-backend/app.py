@@ -593,7 +593,7 @@ def login():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
-# ==================== REGISTER ENDPOINT (FIXED - AUTO-VERIFIED) ====================
+# ==================== REGISTER ENDPOINT ====================
 @app.route('/api/register', methods=['POST'])
 def register():
     try:
@@ -1559,13 +1559,16 @@ def family_register():
     cursor = None
     try:
         data = request.get_json(silent=True) or {}
+        print(f"[DEBUG FAMILY] Received data: {data}")  # ← DEBUG LOG
+        
         full_name = (data.get('full_name') or '').strip()
         email = (data.get('email') or '').strip().lower()
         password = data.get('password') or ''
-        # Prefer student_id (selected from list) but keep student_email for backward compatibility
         student_id = data.get('student_id')
-        student_email = (data.get('student_email') or '').strip().lower()  # Back-compat: Student email to link
+        student_email = (data.get('student_email') or '').strip().lower()
         relationship = (data.get('relationship') or 'parent').strip() or 'parent'
+        
+        print(f"[DEBUG FAMILY] full_name={full_name}, email={email}, student_id={student_id}, relationship={relationship}")  # ← DEBUG LOG
         
         if not full_name or not email or not password or (not student_id and not student_email):
             return jsonify({"error": "All fields required"}), 400
@@ -1697,6 +1700,8 @@ def family_register():
         }), 201
         
     except Exception as e:
+        print(f"[ERROR FAMILY] Registration failed: {e}")
+        traceback.print_exc()  # ← This prints the FULL error
         if conn:
             try:
                 conn.rollback()
