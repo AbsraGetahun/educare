@@ -593,6 +593,7 @@ def register():
         data = request.get_json()
         full_name = data.get('full_name')
         email = data.get('email')
+	username = data.get('email')
         password = data.get('password')
         grade_level = data.get('grade_level')
         section = data.get('section')
@@ -649,9 +650,9 @@ def register():
 
         cursor.execute(
             """INSERT INTO users 
-               (full_name, email, password, role, is_verified, verification_token, token_expiry) 
+               (username, full_name, email, password, role, is_verified, verification_token, token_expiry) 
                VALUES (%s, %s, %s, 'student', FALSE, %s, %s)""",
-            (full_name, email, hashed_password, verification_token, token_expiry)
+            (username, full_name, email, hashed_password, verification_token, token_expiry)
         )
         user_id = int(cursor.lastrowid)
 
