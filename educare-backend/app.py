@@ -593,7 +593,7 @@ def register():
         data = request.get_json()
         full_name = data.get('full_name')
         email = data.get('email')
-	username = data.get('email')
+    	username = data.get('email')
         password = data.get('password')
         grade_level = data.get('grade_level')
         section = data.get('section')
