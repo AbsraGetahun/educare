@@ -9,7 +9,7 @@ import os
 from datetime import datetime, timedelta
 import re
 import secrets
-
+import traceback
 # Simple .env loader (no extra deps)
 def load_dotenv_file(path='.env'):
     if not os.path.exists(path):
@@ -591,7 +591,6 @@ def login():
         
     except Exception as e:
         return jsonify({"error": str(e)}), 500
-
 # ==================== REGISTER ENDPOINT (FIXED) ====================
 @app.route('/api/register', methods=['POST'])
 def register():
@@ -626,6 +625,77 @@ def register():
 
         section = str(section).strip()
 
+        # Hash the password using bcrypt
+        if BCRYPT_AVAILABLE and bcrypt:
+            hashed_password = bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
+        else:
+            hashed_password = password
+
+        conn = get_db_connection()
+        cursor = conn.cursor()
+
+        cursor.execute("SELECT user_id FROM users WHERE email = %s", (email,))
+        if cursor.fetchone():
+            cursor.close()
+            conn.close()
+            return jsonify({"error": "Email already registered"}), 400
+
+        # Enforce strong password
+        is_strong, pw_errors, strength = validate_strong_password(password)
+        if not is_strong:
+            cursor.close()
+            conn.close()
+            return jsonify({"error": "Weak password", "errors": pw_errors, "strength": strength}), 400
+
+        # Generate verification token (24h expiry)
+        verification_token = generate_verification_token()
+        token_expiry = get_token_expiry()
+
+        # DEBUG: Print what we're about to insert
+        print(f"[DEBUG] Inserting: username={username}, full_name={full_name}, email={email}")
+        print(f"[DEBUG] Values: hashed_password={hashed_password[:10]}..., role=student, is_verified=0")
+
+        # ✅ FIXED: 8 columns, 8 values - full_name is never None
+        cursor.execute(
+            """INSERT INTO users 
+               (username, full_name, email, password, role, is_verified, verification_token, token_expiry) 
+               VALUES (%s, %s, %s, %s, %s, %s, %s, %s)""",
+            (username, full_name, email, hashed_password, 'student', 0, verification_token, token_expiry)
+        )
+        user_id = int(cursor.lastrowid)
+
+        cursor.execute(
+            "INSERT INTO students (user_id, grade_level, section, enrollment_date) VALUES (%s, %s, %s, CURDATE())",
+            (user_id, grade_level, section)
+        )
+        
+        conn.commit()
+        cursor.close()
+        conn.close()
+
+        # Send real verification email (never auto-verify)
+        email_sent = False
+        if EMAIL_AVAILABLE:
+            try:
+                email_sent = send_verification_email(email, full_name, verification_token)
+            except Exception as em:
+                print(f"Verification email failed: {em}")
+
+        return jsonify({
+            "message": "Account created! Please check your email for the verification link (expires in 24 hours).",
+            "user_id": user_id,
+            "full_name": full_name,
+            "email": email,
+            "role": "student",
+            "email_sent": email_sent,
+            "strength": strength
+        }), 201
+        
+    except Exception as e:
+        print(f"[ERROR] Registration failed: {e}")
+        import traceback
+        traceback.print_exc()  # ← This prints the FULL error to logs
+        return jsonify({"error": str(e)}), 500
         # Hash the password using bcrypt
         if BCRYPT_AVAILABLE and bcrypt:
             hashed_password = bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
