@@ -597,17 +597,27 @@ def login():
 def register():
     try:
         data = request.get_json()
-        full_name = data.get('full_name')
-        email = data.get('email')
-        username = data.get('email')  # Use email as username
-        password = data.get('password')
-        grade_level = data.get('grade_level')
-        section = data.get('section')
+        print(f"[DEBUG] Registration data received: {data}")  # Debug log
         
-        if not full_name or not email or not password:
-            return jsonify({"error": "All fields required"}), 400
-        if not grade_level or not section:
-            return jsonify({"error": "Grade level and section are required"}), 400
+        # Get all fields with proper default values
+        full_name = data.get('full_name', '').strip() or ''  # ← FIXED: Ensures empty string if None
+        email = data.get('email', '').strip()
+        username = email  # Use email as username
+        password = data.get('password', '')
+        grade_level = data.get('grade_level')
+        section = data.get('section', '').strip()
+        
+        # Validate required fields
+        if not full_name:
+            full_name = ''  # Ensure it's never None
+        if not email:
+            return jsonify({"error": "Email is required"}), 400
+        if not password:
+            return jsonify({"error": "Password is required"}), 400
+        if not grade_level:
+            return jsonify({"error": "Grade level is required"}), 400
+        if not section:
+            return jsonify({"error": "Section is required"}), 400
 
         try:
             grade_level = int(grade_level)
@@ -638,23 +648,11 @@ def register():
             conn.close()
             return jsonify({"error": "Weak password", "errors": pw_errors, "strength": strength}), 400
 
-        # Hash the password using bcrypt
-        if BCRYPT_AVAILABLE and bcrypt:
-            hashed_password = bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
-        else:
-            hashed_password = password
-
-        cursor.execute("SELECT user_id FROM users WHERE email = %s", (email,))
-        if cursor.fetchone():
-            cursor.close()
-            conn.close()
-            return jsonify({"error": "Email already registered"}), 400
-
         # Generate verification token (24h expiry)
         verification_token = generate_verification_token()
         token_expiry = get_token_expiry()
 
-        # ✅ FIXED: 8 columns, 8 values
+        # ✅ FIXED: 8 columns, 8 values - full_name is never None
         cursor.execute(
             """INSERT INTO users 
                (username, full_name, email, password, role, is_verified, verification_token, token_expiry) 
@@ -691,6 +689,7 @@ def register():
         }), 201
         
     except Exception as e:
+        print(f"[ERROR] Registration failed: {e}")  # Debug log
         return jsonify({"error": str(e)}), 500
 
 
