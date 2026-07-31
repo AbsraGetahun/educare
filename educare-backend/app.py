@@ -1552,7 +1552,6 @@ def delete_quiz(quiz_id):
         return jsonify({"error": str(e)}), 200
 
 # ==================== FAMILY ENDPOINTS ====================
-
 @app.route('/api/family/register', methods=['POST'])
 def family_register():
     conn = None
@@ -1647,12 +1646,11 @@ def family_register():
             (user_id, student_pk_id, relationship)
         )
         
-        # ✅ REMOVED: Email verification code - no longer needed
-        
+        # ✅ FIXED: Changed s.student_id to s.id
         cursor.execute("""
             SELECT s.user_id, u.full_name, s.grade_level, s.section
             FROM family f
-            JOIN students s ON f.student_id = s.student_id
+            JOIN students s ON f.student_id = s.id
             JOIN users u ON s.user_id = u.user_id
             WHERE f.user_id = %s
         """, (user_id,))
