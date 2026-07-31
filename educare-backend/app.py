@@ -2101,7 +2101,7 @@ def assign_material_to_student(material_id):
 
 
 # ============================================================
-# ✅ FIXED: approve_material - Direct student assignment
+# ✅ FIXED: approve_material - Direct SQL query for assigned students
 # ============================================================
 @app.route('/api/materials/approve/<int:material_id>', methods=['POST'])
 def approve_material(material_id):
@@ -2176,9 +2176,24 @@ def approve_material(material_id):
                     print(f"[DEBUG] Material already assigned to student {actual_student_id}")
             else:
                 print(f"[DEBUG] ❌ Student with user_id {student_id} not found in students table!")
+        else:
+            print(f"[DEBUG] ❌ No student_id provided in request")
+            cursor.close()
+            conn.close()
+            return jsonify({
+                "error": "No student selected. Please select a student before approving."
+            }), 400
         
-        # Get assigned students after assignment
-        assigned = delivery.get_assigned_students(cursor, material_id)
+        # ✅ FIXED: Use direct SQL query instead of delivery.get_assigned_students()
+        cursor.execute("""
+            SELECT u.user_id, u.full_name
+            FROM student_materials sm
+            JOIN students s ON sm.student_id = s.id
+            JOIN users u ON s.user_id = u.user_id
+            WHERE sm.material_id = %s
+        """, (material_id,))
+        assigned_rows = cursor.fetchall()
+        assigned = [{'user_id': row[0], 'full_name': row[1]} for row in assigned_rows]
         print(f"[DEBUG] Assigned students after: {assigned}")
 
         if not assigned:
@@ -2186,18 +2201,30 @@ def approve_material(material_id):
             cursor.close()
             conn.close()
             return jsonify({
-                "error": "Select which student this material is for, then approve again.",
+                "error": "Failed to assign material to student. Please try again.",
+                "debug": {
+                    "student_id_provided": student_id,
+                    "material_id": material_id
+                }
             }), 400
 
-        # Update status to Approved
+        # Update material status to Approved
         cursor.execute(
             "UPDATE material SET approval_status = 'Approved' WHERE material_id = %s",
             (material_id,)
         )
         conn.commit()
         
-        # Get final assigned students
-        assigned = delivery.get_assigned_students(cursor, material_id)
+        # Get final assigned students using direct SQL
+        cursor.execute("""
+            SELECT u.user_id, u.full_name
+            FROM student_materials sm
+            JOIN students s ON sm.student_id = s.id
+            JOIN users u ON s.user_id = u.user_id
+            WHERE sm.material_id = %s
+        """, (material_id,))
+        final_rows = cursor.fetchall()
+        assigned = [{'user_id': row[0], 'full_name': row[1]} for row in final_rows]
         print(f"[DEBUG] ✅ Final assigned students: {assigned}")
         print(f"[DEBUG] ========================================")
         
