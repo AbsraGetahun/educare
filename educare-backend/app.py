@@ -39,13 +39,9 @@ print(f"[DEBUG] SMTP_FROM: {os.getenv('SMTP_FROM')}")
 print(f"[DEBUG] BASE_URL: {os.getenv('BASE_URL')}")
 
 # Optional imports - app will work without these
-try:
-    import faiss
-    FAISS_AVAILABLE = True
-    print("[DEBUG] FAISS imported successfully")
-except ImportError as e:
-    FAISS_AVAILABLE = False
-    print(f"[DEBUG] FAISS import failed: {e}")
+# FAISS is disabled to prevent deployment issues
+FAISS_AVAILABLE = False
+print("[DEBUG] FAISS is disabled")
 
 try:
     import pickle
