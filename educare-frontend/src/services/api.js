@@ -406,7 +406,7 @@ export const generateMaterialByTopic = async (
   } else if (studentId) {
     payload.student_id = studentId;
   }
-  const response = await api.post('/api/materials/generate-by-topic', payload);
+  const response = await api.post('/api/materials/generate', payload);
   return response.data;
 };
 
