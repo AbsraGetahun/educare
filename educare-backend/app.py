@@ -3515,8 +3515,7 @@ def faiss_test():
             "traceback": traceback.format_exc()
         }), 500
 
-# ==================== LOCAL RAG GENERATION ENDPOINT ====================
-
+# ==================== MATERIAL GENERATION ENDPOINT ====================
 @app.route('/api/materials/generate', methods=['POST'])
 def generate_practice_material():
     try:
@@ -3540,7 +3539,6 @@ def generate_practice_material():
         cursor.execute("SELECT topic_id FROM topics WHERE topic_name LIKE %s LIMIT 1", (f'%{topic_name}%',))
         topic_row = cursor.fetchone()
         if not topic_row:
-            # Create a new topic if it doesn't exist
             cursor.execute(
                 "INSERT INTO topics (topic_name, grade_level) VALUES (%s, %s)",
                 (topic_name, grade_level or 10)
@@ -3597,7 +3595,8 @@ def generate_practice_material():
 
         # 4. If student_id is provided, link to that student
         if student_id:
-            cursor.execute("SELECT student_id FROM students WHERE user_id = %s", (student_id,))
+            # FIXED: Use 'id' instead of 'student_id'
+            cursor.execute("SELECT id FROM students WHERE user_id = %s", (student_id,))
             student_row = cursor.fetchone()
             if student_row:
                 actual_student_id = student_row[0]
@@ -3610,8 +3609,9 @@ def generate_practice_material():
 
         # 5. If for_all_students is true, link to all students in the grade
         if for_all_students and grade_level:
+            # FIXED: Use 'id' instead of 'student_id'
             cursor.execute("""
-                SELECT student_id FROM students WHERE grade_level = %s
+                SELECT id FROM students WHERE grade_level = %s
             """, (grade_level,))
             students = cursor.fetchall()
             for student in students:
