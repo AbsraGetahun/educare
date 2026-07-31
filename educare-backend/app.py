@@ -3160,6 +3160,9 @@ def get_progress_map(student_id):
         print(f"Error in /api/student/{student_id}/progress-map: {e}")
         return jsonify({"progress_map": {}, "grades": []}), 200
 
+# ============================================================
+# ✅ FIXED: get_teacher_mastery_overview - Proper struggling students
+# ============================================================
 @app.route('/api/teacher/mastery-overview', methods=['GET'])
 def get_teacher_mastery_overview():
     """Class-wide mastery summary showing % of students who mastered each topic."""
@@ -3178,96 +3181,58 @@ def get_teacher_mastery_overview():
             cursor.execute("SELECT topic_id, topic_name, grade_level FROM topics ORDER BY grade_level, topic_id")
         topics = cursor.fetchall() or []
         
-        # Total students in scope
+        # Get all students in the grade
         if grade_filter is not None:
             cursor.execute(
                 """
-                SELECT COUNT(*) FROM users u
+                SELECT u.user_id, u.full_name 
+                FROM users u
                 JOIN students s ON u.user_id = s.user_id
                 WHERE u.role = 'student' AND s.grade_level = %s
                 """,
                 (grade_filter,),
             )
         else:
-            cursor.execute("SELECT COUNT(*) FROM users WHERE role = 'student'")
-        result = cursor.fetchone()
-        total_students = result[0] if result else 0
+            cursor.execute("SELECT user_id, full_name FROM users WHERE role = 'student'")
+        students = cursor.fetchall()
+        total_students = len(students)
+        print(f"[DEBUG] Found {total_students} students for grade {grade_filter}")
         
-        from gap_utils import (
-            count_students_mastered_topic,
-            fetch_struggling_students_for_topic,
-            QUIZ_STUDENT_JOIN,
-        )
+        from gap_utils import count_students_mastered_topic
 
         overview = []
         for topic in topics:
             topic_id = topic[0]
+            topic_name = topic[1]
+            topic_grade = topic[2]
             
+            # Count mastered students (>= 70%)
             mastered_count = count_students_mastered_topic(cursor, topic_id, grade_filter)
-            attempted_count = 0
-            try:
-                grade_clause = ""
-                params = [topic_id]
-                if grade_filter is not None:
-                    grade_clause = " AND s_qa.user_id IN (SELECT user_id FROM students WHERE grade_level = %s)"
-                    params.append(grade_filter)
-                cursor.execute(f"""
-                    SELECT COUNT(DISTINCT s_qa.user_id)
-                    FROM quiz_attempt qa
-                    JOIN quizzes q ON qa.quiz_id = q.quiz_id
-                    {QUIZ_STUDENT_JOIN}
-                    WHERE q.topic_id = %s{grade_clause}
-                """, tuple(params))
-                result = cursor.fetchone()
-                attempted_count = result[0] if result else 0
-            except Exception:
-                pass
+            
+            # Get struggling students (< 70%)
+            struggling_students = []
+            for student in students:
+                student_id = student[0]
+                student_name = student[1]
+                avg_score = get_student_mastery_for_topic(cursor, student_id, topic_id)
+                if avg_score is not None and avg_score < 70:
+                    struggling_students.append({
+                        'student_id': student_id,
+                        'full_name': student_name,
+                        'avg_score': round(avg_score, 2)
+                    })
             
             mastery_pct = round((mastered_count / total_students) * 100, 1) if total_students > 0 else 0
             
-            struggling_students = fetch_struggling_students_for_topic(cursor, topic_id, grade_filter)
-            
-            not_started_students = []
-            try:
-                grade_join = ""
-                params = [topic_id]
-                if grade_filter is not None:
-                    grade_join = (
-                        " JOIN students s_ns ON u.user_id = s_ns.user_id AND s_ns.grade_level = %s"
-                    )
-                    params = [grade_filter, topic_id]
-                cursor.execute(f"""
-                    SELECT u.user_id, u.full_name
-                    FROM users u{grade_join}
-                    WHERE u.role = 'student'
-                    AND u.user_id NOT IN (
-                        SELECT DISTINCT s_qa.user_id
-                        FROM quiz_attempt qa
-                        JOIN quizzes q ON qa.quiz_id = q.quiz_id
-                        {QUIZ_STUDENT_JOIN}
-                        WHERE q.topic_id = %s
-                    )
-                """, tuple(params))
-                for s in cursor.fetchall() or []:
-                    prereqs_met = check_prerequisites_met(cursor, s[0], topic_id)
-                    if not prereqs_met:
-                        not_started_students.append({
-                            'student_id': s[0],
-                            'full_name': s[1]
-                        })
-            except Exception:
-                pass
-            
             overview.append({
                 'topic_id': topic_id,
-                'topic_name': topic[1],
-                'grade_level': topic[2],
+                'topic_name': topic_name,
+                'grade_level': topic_grade,
                 'total_students': total_students,
                 'mastered_count': mastered_count,
-                'attempted_count': attempted_count,
                 'mastery_pct': mastery_pct,
                 'struggling_students': struggling_students,
-                'blocked_students': not_started_students
+                'struggling_count': len(struggling_students)
             })
         
         cursor.close()
@@ -3279,7 +3244,9 @@ def get_teacher_mastery_overview():
         })
     except Exception as e:
         print(f"Error in /api/teacher/mastery-overview: {e}")
-        return jsonify({"error": str(e), "overview": [], "total_students": 0}), 200
+        import traceback
+        traceback.print_exc()
+        return jsonify({"error": str(e), "overview": [], "total_students": 0}), 500
 
 @app.route('/api/teacher/heatmap', methods=['GET'])
 def get_teacher_heatmap():
@@ -3673,7 +3640,9 @@ def faiss_test():
             "traceback": traceback.format_exc()
         }), 500
 
-# ==================== MATERIAL GENERATION ENDPOINT ====================
+# ============================================================
+# ✅ FIXED: generate_practice_material - RAG-based content generation
+# ============================================================
 @app.route('/api/materials/generate', methods=['POST'])
 def generate_practice_material():
     try:
@@ -3693,7 +3662,7 @@ def generate_practice_material():
         conn = get_db_connection()
         cursor = conn.cursor()
 
-        # 1. Get topic_id from topics table (create if not exists)
+        # 1. Get or create topic
         cursor.execute("SELECT topic_id FROM topics WHERE topic_name LIKE %s LIMIT 1", (f'%{topic_name}%',))
         topic_row = cursor.fetchone()
         if not topic_row:
@@ -3706,30 +3675,93 @@ def generate_practice_material():
         else:
             topic_id = topic_row[0]
 
-        # 2. Generate sample questions
-        sample_questions = [
-            f"What is the main concept of {topic_name}?",
-            f"Explain how {topic_name} applies to real-world situations.",
-            f"Solve a practice problem related to {topic_name}.",
-            f"Describe the key principles of {topic_name}."
-        ]
+        # 2. 🔥 USE RAG SERVICE to generate content
+        html_content = ""
+        source_citation = "Generated by EDUCARE AI"
+        
+        try:
+            import rag_service as rag
+            print(f"[DEBUG] Using RAG service to generate content for: {topic_name}")
+            
+            # Search curriculum for the topic
+            search_results = rag.search_curriculum(topic_name, grade_level, k=5)
+            
+            if search_results and len(search_results) > 0:
+                # Build rich content from search results
+                content_parts = []
+                source_citations = []
+                
+                for i, result in enumerate(search_results):
+                    text = result.get('text', '')
+                    source = result.get('source_file', 'curriculum')
+                    page = result.get('source_page', '')
+                    section = result.get('section', '')
+                    
+                    if text:
+                        content_parts.append(f"<div class='rag-section' style='margin-bottom: 15px; padding: 10px; background: #f8fafc; border-left: 3px solid #2563eb; border-radius: 4px;'>")
+                        if section:
+                            content_parts.append(f"<h4 style='color: #2563eb; margin: 0 0 8px 0;'>{section}</h4>")
+                        content_parts.append(f"<p style='margin: 0; line-height: 1.6;'>{text}</p>")
+                        content_parts.append(f"<p style='font-size: 12px; color: #6b7280; margin: 8px 0 0 0;'><strong>Source:</strong> {source}, p.{page}</p>")
+                        content_parts.append("</div>")
+                        
+                        # Track sources for citation
+                        source_citations.append(f"{source} (p.{page})")
+                
+                # Generate questions based on the content
+                questions = []
+                for result in search_results[:3]:
+                    text = result.get('text', '')
+                    if text:
+                        # Extract key concepts for questions
+                        sentences = [s.strip() for s in text.split('.') if len(s.strip()) > 20]
+                        for sentence in sentences[:2]:
+                            if len(sentence) > 10:
+                                questions.append(f"Explain the concept: {sentence[:150]}...")
+                
+                if not questions:
+                    questions = [
+                        f"Explain the main concepts of {topic_name}.",
+                        f"Provide examples of {topic_name} in practice.",
+                        f"Describe the key principles of {topic_name}.",
+                        f"How does {topic_name} apply to real-world situations?"
+                    ]
+                
+                # Build HTML content with RAG results
+                html_content = f"""
+                <div style="font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;">
+                    <h2 style="color: #1e293b; border-bottom: 2px solid #2563eb; padding-bottom: 10px;">Practice Material: {topic_name}</h2>
+                    <p><strong>Difficulty:</strong> {difficulty}</p>
+                    <p><strong>Grade Level:</strong> {grade_level or 10}</p>
+                    <hr style="border: 1px solid #e2e8f0; margin: 16px 0;">
+                    <h3 style="color: #1e293b;">📚 Curriculum Content</h3>
+                    {''.join(content_parts)}
+                    <hr style="border: 1px solid #e2e8f0; margin: 16px 0;">
+                    <h3 style="color: #1e293b;">📝 Practice Questions</h3>
+                    <ol style="line-height: 1.8;">
+                        {''.join([f"<li>{q}</li>" for q in questions[:5]])}
+                    </ol>
+                    <hr style="border: 1px solid #e2e8f0; margin: 16px 0;">
+                    <p><strong>Source:</strong> Generated by EDUCARE AI from Ethiopian Curriculum</p>
+                    <p style="font-size: 12px; color: #6b7280;">References: {', '.join(source_citations[:3])}</p>
+                </div>
+                """
+                
+                source_citation = f"Generated from: {', '.join(source_citations[:2])}"
+                print(f"[DEBUG] Generated content from RAG with {len(search_results)} results")
+            else:
+                # Fallback if no RAG results
+                print(f"[DEBUG] No RAG results found, using fallback content")
+                html_content, source_citation = generate_fallback_content(topic_name, difficulty, teacher_id)
+                
+        except Exception as rag_error:
+            print(f"[ERROR] RAG service failed: {rag_error}")
+            import traceback
+            traceback.print_exc()
+            # Fallback content
+            html_content, source_citation = generate_fallback_content(topic_name, difficulty, teacher_id)
 
-        html_content = f"""
-        <h2>Practice Material: {topic_name}</h2>
-        <p><strong>Difficulty:</strong> {difficulty}</p>
-        <p><strong>Teacher ID:</strong> {teacher_id}</p>
-        <hr>
-        <h3>Questions:</h3>
-        <ol>
-            <li>{sample_questions[0]}</li>
-            <li>{sample_questions[1]}</li>
-            <li>{sample_questions[2]}</li>
-            <li>{sample_questions[3]}</li>
-        </ol>
-        <p><strong>Source:</strong> Generated by EDUCARE AI</p>
-        """
-
-        # 3. Insert into material table with Pending status
+        # 3. Insert into material table
         cursor.execute("""
             INSERT INTO material 
             (topic_id, title, content, source_citation, source_file, source_page, source_grade, 
@@ -3739,8 +3771,8 @@ def generate_practice_material():
             topic_id,
             f"Practice: {topic_name}",
             html_content,
-            "Generated by EDUCARE AI",
-            "curriculum_data/sample.pdf",
+            source_citation,
+            "curriculum_data",
             "1",
             str(grade_level or 10),
             'Pending',
@@ -3751,9 +3783,9 @@ def generate_practice_material():
         conn.commit()
         print(f"[DEBUG] Material inserted with ID: {material_id}")
 
-        # 4. If student_id is provided, link to that student
-        if student_id:
-            # FIXED: Use 'id' instead of 'student_id'
+        # 4. Assign to student(s)
+        assigned_students = []
+        if student_id and not for_all_students:
             cursor.execute("SELECT id FROM students WHERE user_id = %s", (student_id,))
             student_row = cursor.fetchone()
             if student_row:
@@ -3763,13 +3795,12 @@ def generate_practice_material():
                     VALUES (%s, %s, 'Pending', NOW())
                 """, (actual_student_id, material_id))
                 conn.commit()
+                assigned_students.append(student_id)
                 print(f"[DEBUG] Linked material to student: {actual_student_id}")
 
-        # 5. If for_all_students is true, link to all students in the grade
-        if for_all_students and grade_level:
-            # FIXED: Use 'id' instead of 'student_id'
+        elif for_all_students and grade_level:
             cursor.execute("""
-                SELECT id FROM students WHERE grade_level = %s
+                SELECT id, user_id FROM students WHERE grade_level = %s
             """, (grade_level,))
             students = cursor.fetchall()
             for student in students:
@@ -3777,6 +3808,7 @@ def generate_practice_material():
                     INSERT INTO student_materials (student_id, material_id, status, assigned_date)
                     VALUES (%s, %s, 'Pending', NOW())
                 """, (student[0], material_id))
+                assigned_students.append(student[1])
             conn.commit()
             print(f"[DEBUG] Linked material to {len(students)} students")
 
@@ -3789,9 +3821,11 @@ def generate_practice_material():
             "topic_name": topic_name,
             "grade_level": grade_level or 10,
             "difficulty": difficulty,
-            "questions_count": len(sample_questions),
+            "questions_count": 5,
             "message": "Material generated and sent for teacher approval",
-            "status": "pending"
+            "status": "pending",
+            "assigned_students": assigned_students,
+            "using_rag": True
         }), 201
 
     except Exception as e:
@@ -3799,6 +3833,33 @@ def generate_practice_material():
         import traceback
         traceback.print_exc()
         return jsonify({"error": str(e)}), 500
+
+def generate_fallback_content(topic_name, difficulty, teacher_id):
+    """Generate fallback content if RAG is unavailable."""
+    html_content = f"""
+    <div style="font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;">
+        <h2 style="color: #1e293b; border-bottom: 2px solid #2563eb; padding-bottom: 10px;">Practice Material: {topic_name}</h2>
+        <p><strong>Difficulty:</strong> {difficulty}</p>
+        <p><strong>Teacher ID:</strong> {teacher_id}</p>
+        <hr style="border: 1px solid #e2e8f0; margin: 16px 0;">
+        <h3 style="color: #1e293b;">📚 Topic Overview</h3>
+        <p>This practice material covers the topic: <strong>{topic_name}</strong>.</p>
+        <p>Please refer to your textbook for detailed explanations and examples.</p>
+        <hr style="border: 1px solid #e2e8f0; margin: 16px 0;">
+        <h3 style="color: #1e293b;">📝 Practice Questions</h3>
+        <ol style="line-height: 1.8;">
+            <li>What is the main concept of {topic_name}?</li>
+            <li>Explain how {topic_name} applies to real-world situations.</li>
+            <li>Solve a practice problem related to {topic_name}.</li>
+            <li>Describe the key principles of {topic_name}.</li>
+            <li>Provide examples of {topic_name} in practice.</li>
+        </ol>
+        <hr style="border: 1px solid #e2e8f0; margin: 16px 0;">
+        <p><strong>Source:</strong> Generated by EDUCARE AI (Fallback)</p>
+    </div>
+    """
+    source_citation = "Generated by EDUCARE AI (Fallback)"
+    return html_content, source_citation
 
 @app.route('/api/curriculum/search/faiss', methods=['POST'])
 def search_curriculum_faiss():
