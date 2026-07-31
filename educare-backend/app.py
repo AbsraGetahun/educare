@@ -3168,10 +3168,12 @@ def get_teacher_mastery_overview():
     """Class-wide mastery summary showing % of students who mastered each topic."""
     try:
         grade_filter = parse_teacher_grade(request.args.get('grade_level'))
+        print(f"[DEBUG] get_teacher_mastery_overview called with grade_filter: {grade_filter}")
+        
         conn = get_db_connection()
         cursor = conn.cursor()
         
-        # Get topics (optionally scoped to teacher grade)
+        # Get topics
         if grade_filter is not None:
             cursor.execute(
                 "SELECT topic_id, topic_name, grade_level FROM topics WHERE grade_level = %s ORDER BY topic_id",
@@ -3179,7 +3181,8 @@ def get_teacher_mastery_overview():
             )
         else:
             cursor.execute("SELECT topic_id, topic_name, grade_level FROM topics ORDER BY grade_level, topic_id")
-        topics = cursor.fetchall() or []
+        topics = cursor.fetchall()
+        print(f"[DEBUG] Found {len(topics)} topics")
         
         # Get all students in the grade
         if grade_filter is not None:
@@ -3196,31 +3199,47 @@ def get_teacher_mastery_overview():
             cursor.execute("SELECT user_id, full_name FROM users WHERE role = 'student'")
         students = cursor.fetchall()
         total_students = len(students)
-        print(f"[DEBUG] Found {total_students} students for grade {grade_filter}")
+        print(f"[DEBUG] Found {total_students} students")
         
-        from gap_utils import count_students_mastered_topic
-
         overview = []
         for topic in topics:
             topic_id = topic[0]
             topic_name = topic[1]
             topic_grade = topic[2]
             
-            # Count mastered students (>= 70%)
-            mastered_count = count_students_mastered_topic(cursor, topic_id, grade_filter)
-            
-            # Get struggling students (< 70%)
+            mastered_count = 0
             struggling_students = []
+            blocked_students = []
+            
             for student in students:
                 student_id = student[0]
                 student_name = student[1]
-                avg_score = get_student_mastery_for_topic(cursor, student_id, topic_id)
-                if avg_score is not None and avg_score < 70:
-                    struggling_students.append({
-                        'student_id': student_id,
-                        'full_name': student_name,
-                        'avg_score': round(avg_score, 2)
-                    })
+                
+                try:
+                    # Get average score for this student on this topic
+                    from gap_utils import QUIZ_STUDENT_JOIN
+                    cursor.execute(f"""
+                        SELECT AVG(qa.score * 100.0 / NULLIF(q.total_marks, 0)) as avg_pct
+                        FROM quiz_attempt qa
+                        JOIN quizzes q ON qa.quiz_id = q.quiz_id
+                        {QUIZ_STUDENT_JOIN}
+                        WHERE s_qa.user_id = %s AND q.topic_id = %s
+                    """, (student_id, topic_id))
+                    result = cursor.fetchone()
+                    avg_score = round(float(result[0]), 2) if result and result[0] is not None else None
+                    
+                    if avg_score is not None:
+                        if avg_score >= 70:
+                            mastered_count += 1
+                        else:
+                            struggling_students.append({
+                                'student_id': student_id,
+                                'full_name': student_name,
+                                'avg_score': avg_score
+                            })
+                except Exception as e:
+                    print(f"[DEBUG] Error calculating mastery for student {student_id} on topic {topic_id}: {e}")
+                    continue
             
             mastery_pct = round((mastered_count / total_students) * 100, 1) if total_students > 0 else 0
             
@@ -3232,22 +3251,23 @@ def get_teacher_mastery_overview():
                 'mastered_count': mastered_count,
                 'mastery_pct': mastery_pct,
                 'struggling_students': struggling_students,
-                'struggling_count': len(struggling_students)
+                'struggling_count': len(struggling_students),
+                'blocked_students': blocked_students
             })
         
         cursor.close()
         conn.close()
+        
         return jsonify({
             "overview": overview,
             "total_students": total_students,
             "grade_level": grade_filter,
         })
     except Exception as e:
-        print(f"Error in /api/teacher/mastery-overview: {e}")
+        print(f"[ERROR] get_teacher_mastery_overview: {e}")
         import traceback
         traceback.print_exc()
         return jsonify({"error": str(e), "overview": [], "total_students": 0}), 500
-
 @app.route('/api/teacher/heatmap', methods=['GET'])
 def get_teacher_heatmap():
     """Class-wide gap heatmap showing mastery percentage and student breakdown per topic."""
