@@ -2560,6 +2560,15 @@ def admin_create_user():
             conn.close()
             return jsonify({"error": "Email already registered"}), 400
         
+        # Check if username already exists (use email as username if not provided)
+        username = data.get('username') or email
+        
+        cursor.execute("SELECT user_id FROM users WHERE username = %s", (username,))
+        if cursor.fetchone():
+            cursor.close()
+            conn.close()
+            return jsonify({"error": "Username already taken"}), 400
+        
         # Admin-created accounts must still use strong passwords
         is_strong, pw_errors, _ = validate_strong_password(password)
         if not is_strong:
@@ -2567,10 +2576,10 @@ def admin_create_user():
             conn.close()
             return jsonify({"error": "Weak password", "errors": pw_errors}), 400
         
-        # Insert user (admin created = auto verified)
+        # ✅ FIXED: Include username in INSERT
         cursor.execute(
-            "INSERT INTO users (full_name, email, password, role, is_verified, created_at) VALUES (%s, %s, %s, %s, TRUE, NOW())",
-            (full_name, email, hashed_password, role)
+            "INSERT INTO users (username, full_name, email, password, role, is_verified, created_at) VALUES (%s, %s, %s, %s, %s, TRUE, NOW())",
+            (username, full_name, email, hashed_password, role)
         )
         user_id = cursor.lastrowid
         
@@ -2669,8 +2678,10 @@ def admin_create_user():
         }), 201
         
     except Exception as e:
+        print(f"[ERROR] admin_create_user: {e}")
+        import traceback
+        traceback.print_exc()
         return jsonify({"error": str(e)}), 500
-
 @app.route('/api/admin/user/<int:user_id>', methods=['PUT'])
 def admin_update_user(user_id):
     try:

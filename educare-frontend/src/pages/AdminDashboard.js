@@ -13,6 +13,7 @@ import {
 const emptyForm = {
   full_name: '',
   email: '',
+  username: '',
   password: '',
   role: 'student',
   grade_level: '',
@@ -124,6 +125,7 @@ function AdminDashboard() {
     setUserForm({
       full_name: user.full_name,
       email: user.email,
+      username: user.username || '',
       password: '',
       role: user.role,
       grade_level: user.grade_level || user.assigned_grade || '',
@@ -567,6 +569,9 @@ function AdminDashboard() {
         )}
       </div>
 
+      {/* ============================================================
+          ADD USER MODAL - WITH USERNAME FIELD
+          ============================================================ */}
       {showAddUser && (
         <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4">
           <div className="bg-white rounded-xl shadow-xl max-w-md w-full max-h-[85vh] overflow-y-auto">
@@ -607,6 +612,17 @@ function AdminDashboard() {
                       className="w-full px-3 py-1.5 border border-gray-200 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-teal-500 focus:border-transparent"
                       required
                     />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-semibold text-gray-600 mb-1">Username</label>
+                    <input
+                      type="text"
+                      value={userForm.username}
+                      onChange={(e) => setUserForm({ ...userForm, username: e.target.value })}
+                      placeholder="Leave blank to use email as username"
+                      className="w-full px-3 py-1.5 border border-gray-200 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-teal-500 focus:border-transparent"
+                    />
+                    <p className="text-[10px] text-gray-400 mt-1">If left blank, email will be used as username</p>
                   </div>
                   <div>
                     <label className="block text-xs font-semibold text-gray-600 mb-1">Password *</label>
@@ -660,6 +676,9 @@ function AdminDashboard() {
         </div>
       )}
 
+      {/* ============================================================
+          EDIT USER MODAL - WITH USERNAME FIELD
+          ============================================================ */}
       {showEditUser && selectedUser && (
         <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4">
           <div className="bg-white rounded-xl shadow-xl max-w-md w-full max-h-[85vh] overflow-y-auto">
@@ -700,6 +719,16 @@ function AdminDashboard() {
                       onChange={(e) => setUserForm({ ...userForm, email: e.target.value })}
                       className="w-full px-3 py-1.5 border border-gray-200 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-teal-500 focus:border-transparent"
                       required
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-semibold text-gray-600 mb-1">Username</label>
+                    <input
+                      type="text"
+                      value={userForm.username}
+                      onChange={(e) => setUserForm({ ...userForm, username: e.target.value })}
+                      placeholder="Leave blank to keep current"
+                      className="w-full px-3 py-1.5 border border-gray-200 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-teal-500 focus:border-transparent"
                     />
                   </div>
                   <div>
