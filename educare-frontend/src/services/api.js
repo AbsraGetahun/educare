@@ -372,7 +372,7 @@ export const getHeatmap = async (gradeLevel) => {
   return response.data;
 };
 
-// RAG Material Generation API
+// ==================== RAG MATERIAL GENERATION API (UPDATED) ====================
 export const generatePracticeMaterial = async (topicName, studentId, difficulty = 'medium', skipDedup = false, teacherId, teacherGrade) => {
   const payload = {
     topic_name: topicName,
@@ -382,6 +382,7 @@ export const generatePracticeMaterial = async (topicName, studentId, difficulty 
   };
   if (teacherId) payload.teacher_id = teacherId;
   if (teacherGrade != null && teacherGrade !== '') payload.teacher_grade_level = teacherGrade;
+  // ✅ UPDATED: Changed from '/api/materials/generate-by-topic' to '/api/materials/generate'
   const response = await api.post('/api/materials/generate', payload);
   return response.data;
 };
@@ -406,6 +407,7 @@ export const generateMaterialByTopic = async (
   } else if (studentId) {
     payload.student_id = studentId;
   }
+  // ✅ UPDATED: Changed from '/api/materials/generate-by-topic' to '/api/materials/generate'
   const response = await api.post('/api/materials/generate', payload);
   return response.data;
 };
