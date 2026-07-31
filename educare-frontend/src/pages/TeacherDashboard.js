@@ -346,27 +346,42 @@ function TeacherDashboard() {
     });
   };
 
+  // ============================================================
+  // ✅ FIXED: handleApproveMaterial - Better error handling
+  // ============================================================
   const handleApproveMaterial = async (materialId, studentId = null) => {
+    console.log('📝 handleApproveMaterial called with:', { materialId, studentId });
+    
     const material = pendingMaterials.find((m) => m.material_id === materialId);
     const hasAssignment = material?.assigned_students?.length > 0;
+    
+    // If no assignment and no studentId, show error
     if (!hasAssignment && !studentId) {
       alert('Please select which student this material is for, then click Approve.');
       return;
     }
+    
     try {
+      console.log('📤 Calling approveMaterial API with:', { materialId, studentId });
       const result = await approveMaterial(materialId, studentId);
+      console.log('✅ API Response:', result);
+      
       if (result.error) {
         alert(result.error);
         return;
       }
+      
       setPendingMaterials(pendingMaterials.filter(m => m.material_id !== materialId));
       const names = (result.assigned_students || []).map((s) => s.full_name).join(', ');
       alert(names
         ? `Material approved and sent to: ${names}`
         : 'Material approved successfully!');
+      
+      // Refresh pending materials
       const materialsData = await getPendingMaterials();
       setPendingMaterials(materialsData.materials || []);
     } catch (err) {
+      console.error('❌ Error approving material:', err);
       const msg = err.response?.data?.error || 'Failed to approve material';
       alert(msg);
     }

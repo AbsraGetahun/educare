@@ -267,10 +267,24 @@ export const assignMaterialToStudent = async (materialId, studentId) => {
   return response.data;
 };
 
+// ============================================================
+// ✅ FIXED: approveMaterial - Always sends student_id
+// ============================================================
 export const approveMaterial = async (materialId, studentId = null) => {
-  const payload = studentId ? { student_id: studentId } : {};
-  const response = await api.post(`/api/materials/approve/${materialId}`, payload);
-  return response.data;
+  console.log('📤 Approving material:', materialId, 'for student:', studentId);
+  try {
+    // Always send student_id in payload, even if null
+    const payload = { student_id: studentId };
+    console.log('📤 Request payload:', payload);
+    
+    const response = await api.post(`/api/materials/approve/${materialId}`, payload);
+    console.log('✅ Approve response:', response.data);
+    return response.data;
+  } catch (error) {
+    console.error('❌ Approve error:', error);
+    console.error('❌ Error response:', error.response?.data);
+    throw error;
+  }
 };
 
 export const rejectMaterial = async (materialId) => {
@@ -382,7 +396,6 @@ export const generatePracticeMaterial = async (topicName, studentId, difficulty 
   };
   if (teacherId) payload.teacher_id = teacherId;
   if (teacherGrade != null && teacherGrade !== '') payload.teacher_grade_level = teacherGrade;
-  // ✅ UPDATED: Changed from '/api/materials/generate-by-topic' to '/api/materials/generate'
   const response = await api.post('/api/materials/generate', payload);
   return response.data;
 };
@@ -407,7 +420,6 @@ export const generateMaterialByTopic = async (
   } else if (studentId) {
     payload.student_id = studentId;
   }
-  // ✅ UPDATED: Changed from '/api/materials/generate-by-topic' to '/api/materials/generate'
   const response = await api.post('/api/materials/generate', payload);
   return response.data;
 };

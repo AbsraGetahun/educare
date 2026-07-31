@@ -638,6 +638,9 @@ export function QuizzesTab({ quizzes, setShowCreateQuiz, setShowAIQuizModal, set
   );
 }
 
+// ============================================================
+// ✅ FIXED: ApprovalsTab - Student selection now works properly
+// ============================================================
 export function ApprovalsTab({ pendingMaterials, students = [], handleApproveMaterial, setShowRejectConfirm }) {
   const [expandedMaterialIds, setExpandedMaterialIds] = React.useState({});
   const [assignStudentByMaterial, setAssignStudentByMaterial] = React.useState({});
@@ -709,7 +712,6 @@ export function ApprovalsTab({ pendingMaterials, students = [], handleApproveMat
             const questions = hasHtml ? parseQuestions(m.content) : [];
             const contextHtml = hasHtml ? getContextHtml(m.content) : '';
             const hasAssignment = m.assigned_students && m.assigned_students.length > 0;
-            const selectedAssignId = assignStudentByMaterial[m.material_id] || '';
 
             return (
               <div
@@ -763,7 +765,7 @@ export function ApprovalsTab({ pendingMaterials, students = [], handleApproveMat
                         )}
                       </div>
                     </div>
-                    
+
                     {/* Action Buttons */}
                     <div className="flex items-center gap-2 flex-shrink-0 mt-3 md:mt-0 w-full md:w-auto justify-between md:justify-end">
                       <button
@@ -787,11 +789,11 @@ export function ApprovalsTab({ pendingMaterials, students = [], handleApproveMat
                           </>
                         )}
                       </button>
-                      
+
                       <div className="flex items-center gap-2 flex-wrap justify-end">
                         {!hasAssignment && students.length > 0 && (
                           <select
-                            value={selectedAssignId}
+                            value={assignStudentByMaterial[m.material_id] || ''}
                             onChange={(e) => setAssignStudentByMaterial((prev) => ({
                               ...prev,
                               [m.material_id]: e.target.value,
@@ -807,20 +809,36 @@ export function ApprovalsTab({ pendingMaterials, students = [], handleApproveMat
                             ))}
                           </select>
                         )}
+                        
+                        {/* ✅ FIXED APPROVE BUTTON */}
                         <button
                           type="button"
-                          onClick={() => handleApproveMaterial(
-                            m.material_id,
-                            hasAssignment ? null : (selectedAssignId ? parseInt(selectedAssignId, 10) : null)
-                          )}
-                          disabled={!hasAssignment && !selectedAssignId}
+                          onClick={() => {
+                            // Get the student ID directly from the state
+                            const studentId = assignStudentByMaterial[m.material_id];
+                            
+                            console.log('📝 Material ID:', m.material_id);
+                            console.log('📝 Student ID from state:', studentId);
+                            console.log('📝 Has assignment:', hasAssignment);
+                            
+                            if (!hasAssignment && !studentId) {
+                              alert('Please select a student first!');
+                              return;
+                            }
+                            
+                            const finalStudentId = hasAssignment ? null : parseInt(studentId, 10);
+                            console.log('📤 Final studentId to send:', finalStudentId);
+                            
+                            handleApproveMaterial(m.material_id, finalStudentId);
+                          }}
+                          disabled={!hasAssignment && !assignStudentByMaterial[m.material_id]}
                           className="px-3 py-1.5 text-xs font-bold text-white rounded-md shadow-sm hover:opacity-95 transition disabled:opacity-50 disabled:cursor-not-allowed"
                           style={{ backgroundColor: '#14b8a6' }}
-                          title={!hasAssignment && !selectedAssignId ? 'Choose which student receives this material' : ''}
+                          title={!hasAssignment && !assignStudentByMaterial[m.material_id] ? 'Choose which student receives this material' : ''}
                         >
                           Approve
                         </button>
-                        
+
                         <button
                           type="button"
                           onClick={() => setShowRejectConfirm(m.material_id)}
