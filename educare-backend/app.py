@@ -38,10 +38,14 @@ print(f"[DEBUG] SMTP_USER: {os.getenv('SMTP_USER')}")
 print(f"[DEBUG] SMTP_FROM: {os.getenv('SMTP_FROM')}")
 print(f"[DEBUG] BASE_URL: {os.getenv('BASE_URL')}")
 
-# Optional imports - app will work without these
-# FAISS is disabled to prevent deployment issues
-FAISS_AVAILABLE = False
-print("[DEBUG] FAISS is disabled")
+# ==================== FAISS IMPORT ====================
+FAISS_AVAILABLE = True
+try:
+    import faiss
+    print(f"[DEBUG] FAISS imported successfully, version: {faiss.__version__}")
+except ImportError as e:
+    FAISS_AVAILABLE = False
+    print(f"[DEBUG] FAISS import failed: {e}")
 
 try:
     import pickle
@@ -1939,8 +1943,7 @@ def get_family_student_recommendations(student_id):
             topic_id = topic['topic_id']
             avg_score = topic['avg_score']
             cursor.execute(f"""
-                SELECT q.quiz_id, q.title, q.total_marks
-                FROM quizzes q
+                SELECT q.quiz_id, q.title, q.total_marks                FROM quizzes q
                 WHERE q.topic_id = %s
                 AND q.quiz_id NOT IN (
                     SELECT qa.quiz_id
@@ -3445,6 +3448,7 @@ def faiss_test():
         import os
         import pickle
         import sys
+        import faiss
         
         # Get the current directory
         current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -3476,14 +3480,8 @@ def faiss_test():
                 print(f"  - {item}")
         else:
             print(f"[DEBUG FAISS] faiss_index folder NOT found!")
-            
-        # Check faiss import
-        try:
-            import faiss
-            print(f"[DEBUG FAISS] FAISS imported successfully, version: {faiss.__version__}")
-        except ImportError as e:
-            print(f"[DEBUG FAISS] FAISS import failed: {e}")
-            return jsonify({"error": f"FAISS not installed: {e}"}), 500
+        
+        print(f"[DEBUG FAISS] FAISS imported successfully, version: {faiss.__version__}")
 
         if not os.path.exists(index_path):
             return jsonify({"error": f"FAISS index file not found at {index_path}"}), 404
