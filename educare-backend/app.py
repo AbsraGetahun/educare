@@ -2594,19 +2594,39 @@ def admin_create_user():
                 (user_id, grade_level, section)
             )
         elif role == 'teacher':
-            teacher_grade = parse_teacher_grade(
-                data.get('teacher_grade_level') or data.get('assigned_grade') or grade_level
-            )
+            # ============================================================
+            # ✅ FIXED: Use grade_level directly from frontend
+            # ============================================================
             if not qualification or not subject:
                 conn.rollback()
                 cursor.close()
                 conn.close()
                 return jsonify({"error": "Qualification and subject are required for teachers"}), 400
-            if teacher_grade is None:
+            
+            # Use grade_level directly (sent from frontend)
+            teacher_grade = grade_level
+            
+            if teacher_grade is None or str(teacher_grade).strip() == '':
                 conn.rollback()
                 cursor.close()
                 conn.close()
                 return jsonify({"error": "Assigned grade (9, 10, 11, or 12) is required for teachers"}), 400
+            
+            try:
+                teacher_grade = int(teacher_grade)
+            except (ValueError, TypeError):
+                conn.rollback()
+                cursor.close()
+                conn.close()
+                return jsonify({"error": "Grade must be a number (9, 10, 11, or 12)"}), 400
+            
+            # Validate it's between 9 and 12
+            if teacher_grade not in [9, 10, 11, 12]:
+                conn.rollback()
+                cursor.close()
+                conn.close()
+                return jsonify({"error": "Assigned grade must be 9, 10, 11, or 12"}), 400
+            
             cursor.execute(
                 "INSERT INTO teachers (user_id, qualification, subject, grade_level) VALUES (%s, %s, %s, %s)",
                 (user_id, qualification, subject, teacher_grade)
