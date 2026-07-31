@@ -1604,7 +1604,6 @@ def family_register():
                 cursor.close()
                 conn.close()
                 return jsonify({"error": "student_id must be a number"}), 400
-            # ✅ FIXED: Changed 'student_id' to 'id' in the SELECT statement
             cursor.execute("SELECT id FROM students WHERE user_id = %s", (student_id,))
             row = cursor.fetchone()
             if not row:
@@ -1621,7 +1620,6 @@ def family_register():
                 conn.close()
                 return jsonify({"error": "Student with this email not found"}), 400
             student_user_id = int(student[0])
-            # ✅ FIXED: Changed 'student_id' to 'id' in the SELECT statement
             cursor.execute("SELECT id FROM students WHERE user_id = %s", (student_user_id,))
             row = cursor.fetchone()
             if not row:
@@ -1634,10 +1632,11 @@ def family_register():
         verification_token = generate_verification_token()
         token_expiry = get_token_expiry()
 
+        # ✅ FIXED: Auto-verified (is_verified = TRUE)
         cursor.execute(
             """INSERT INTO users 
                (full_name, email, password, role, is_verified, verification_token, token_expiry) 
-               VALUES (%s, %s, %s, 'family', FALSE, %s, %s)""",
+               VALUES (%s, %s, %s, 'family', TRUE, %s, %s)""",
             (full_name, email, hashed_password, verification_token, token_expiry)
         )
         user_id = int(cursor.lastrowid)
@@ -1648,31 +1647,8 @@ def family_register():
             (user_id, student_pk_id, relationship)
         )
         
-        # Send verification email
-        email_sent = False
-        if not EMAIL_AVAILABLE:
-            try:
-                conn.rollback()
-            except Exception:
-                pass
-            return jsonify({
-                "error": "Email verification service is unavailable. Please contact support.",
-                "email_service_available": False
-            }), 503
-        try:
-            email_sent = send_verification_email(email, full_name, verification_token)
-        except Exception:
-            email_sent = False
-
-        if not email_sent:
-            try:
-                conn.rollback()
-            except Exception:
-                pass
-            return jsonify({
-                "error": "Failed to send verification email. Please check the email address and try again."
-            }), 502
-
+        # ✅ REMOVED: Email verification code - no longer needed
+        
         cursor.execute("""
             SELECT s.user_id, u.full_name, s.grade_level, s.section
             FROM family f
@@ -1691,12 +1667,12 @@ def family_register():
         conn.commit()
 
         return jsonify({
-            "message": "Account created! Please check your email for the 24-hour verification link before logging in.",
+            "message": "Family account created successfully! You can now login.",
             "user_id": user_id,
             "full_name": full_name,
             "email": email,
             "role": "family",
-            "email_sent": email_sent,
+            "email_sent": False,
             "students": students_list,
             "linked_students": len(students_list)
         }), 201
@@ -1721,7 +1697,6 @@ def family_register():
                 conn.close()
             except Exception:
                 pass
-
 @app.route('/api/family/students/list', methods=['GET'])
 def list_students_for_family():
     """Get list of all students available to link to family accounts"""
