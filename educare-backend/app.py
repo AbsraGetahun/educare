@@ -2100,26 +2100,43 @@ def assign_material_to_student(material_id):
         return jsonify({"error": str(e)}), 500
 
 
+# ============================================================
+# ✅ FIXED: approve_material - Direct student assignment
+# ============================================================
 @app.route('/api/materials/approve/<int:material_id>', methods=['POST'])
 def approve_material(material_id):
     try:
         import material_delivery as delivery
         data = request.get_json() or {}
         student_id = data.get('student_id')
-
+        
+        # 🔍 DEBUG LOGS
+        print(f"[DEBUG] ========================================")
+        print(f"[DEBUG] Approve material {material_id} with student_id: {student_id}")
+        print(f"[DEBUG] Request data: {data}")
+        
         conn = get_db_connection()
         cursor = conn.cursor()
         
         # Check if material exists
-        cursor.execute("SELECT material_id FROM material WHERE material_id = %s", (material_id,))
-        if not cursor.fetchone():
+        cursor.execute("SELECT material_id, approval_status FROM material WHERE material_id = %s", (material_id,))
+        material = cursor.fetchone()
+        if not material:
             cursor.close()
             conn.close()
             return jsonify({"error": "Material not found"}), 404
         
+        print(f"[DEBUG] Material found: ID={material[0]}, Status={material[1]}")
+        
+        # Check if already approved
+        if material[1] == 'Approved':
+            cursor.close()
+            conn.close()
+            return jsonify({"error": "Material already approved"}), 400
+        
         delivery.ensure_generation_history_material_id(cursor)
 
-        # Backfill assignment from body, generation history, or existing row
+        # Get grade level
         cursor.execute(
             """
             SELECT t.grade_level FROM material m
@@ -2130,18 +2147,46 @@ def approve_material(material_id):
         )
         grade_row = cursor.fetchone()
         mat_grade = int(grade_row[0]) if grade_row and grade_row[0] else None
-        delivery.ensure_material_assigned(
-            cursor, material_id, student_id=student_id, grade_level=mat_grade
-        )
+        print(f"[DEBUG] Material grade: {mat_grade}")
+        
+        # ✅ DIRECT ASSIGNMENT: Link material to student
+        if student_id:
+            print(f"[DEBUG] Attempting to assign to student_id: {student_id}")
+            # student_id from frontend is users.user_id, need to get students.id (PK)
+            cursor.execute("SELECT id FROM students WHERE user_id = %s", (student_id,))
+            student_row = cursor.fetchone()
+            if student_row:
+                actual_student_id = student_row[0]
+                print(f"[DEBUG] Found student: user_id={student_id}, student_pk={actual_student_id}")
+                
+                # Check if already assigned
+                cursor.execute(
+                    "SELECT 1 FROM student_materials WHERE student_id = %s AND material_id = %s",
+                    (actual_student_id, material_id)
+                )
+                if not cursor.fetchone():
+                    # Assign the material to the student
+                    cursor.execute(
+                        "INSERT INTO student_materials (student_id, material_id, status, assigned_date) VALUES (%s, %s, 'Pending', NOW())",
+                        (actual_student_id, material_id)
+                    )
+                    conn.commit()
+                    print(f"[DEBUG] ✅ Assigned material {material_id} to student {actual_student_id}")
+                else:
+                    print(f"[DEBUG] Material already assigned to student {actual_student_id}")
+            else:
+                print(f"[DEBUG] ❌ Student with user_id {student_id} not found in students table!")
+        
+        # Get assigned students after assignment
         assigned = delivery.get_assigned_students(cursor, material_id)
+        print(f"[DEBUG] Assigned students after: {assigned}")
 
         if not assigned:
+            print(f"[DEBUG] ❌ No assigned students found!")
             cursor.close()
             conn.close()
             return jsonify({
-                "error": (
-                    "Select which student this material is for, then approve again."
-                ),
+                "error": "Select which student this material is for, then approve again.",
             }), 400
 
         # Update status to Approved
@@ -2150,7 +2195,12 @@ def approve_material(material_id):
             (material_id,)
         )
         conn.commit()
+        
+        # Get final assigned students
         assigned = delivery.get_assigned_students(cursor, material_id)
+        print(f"[DEBUG] ✅ Final assigned students: {assigned}")
+        print(f"[DEBUG] ========================================")
+        
         cursor.close()
         conn.close()
         
@@ -2159,8 +2209,11 @@ def approve_material(material_id):
             "assigned_students": assigned,
         }), 200
     except Exception as e:
-        print(f"Error in /api/materials/approve/{material_id}: {e}")
+        print(f"[ERROR] Error in /api/materials/approve/{material_id}: {e}")
+        import traceback
+        traceback.print_exc()
         return jsonify({"error": str(e)}), 500
+
 
 @app.route('/api/materials/reject/<int:material_id>', methods=['POST'])
 def reject_material(material_id):
