@@ -2682,6 +2682,8 @@ def admin_create_user():
         import traceback
         traceback.print_exc()
         return jsonify({"error": str(e)}), 500
+
+
 @app.route('/api/admin/user/<int:user_id>', methods=['PUT'])
 def admin_update_user(user_id):
     try:
@@ -2929,50 +2931,79 @@ def get_student_mastery_for_topic(cursor, student_id, topic_id):
 def get_topic_mastery_map(cursor, student_id):
     """Get mastery status for all topics for a student.
     Returns dict {topic_id: {'avg_score': float|None, 'status': str}}"""
-    cursor.execute("SELECT topic_id, prerequisites, topic_name, grade_level FROM topics")
-    topics = cursor.fetchall()
-    mastery_map = {}
-    for topic in topics:
-        topic_id = topic[0]
-        avg_score = get_student_mastery_for_topic(cursor, student_id, topic_id)
-        if avg_score is None:
-            status = 'not_started'
-        elif avg_score >= 70:
-            status = 'mastered'
-        else:
-            status = 'in_progress'
-        mastery_map[topic_id] = {
-            'avg_score': avg_score,
-            'status': status,
-            'topic_name': topic[2],
-            'grade_level': topic[3],
-            'prerequisites': topic[1] or ''
-        }
-    return mastery_map
+    try:
+        cursor.execute("SELECT topic_id, prerequisites, topic_name, grade_level FROM topics")
+        topics = cursor.fetchall()
+        mastery_map = {}
+        for topic in topics:
+            topic_id = topic[0]
+            avg_score = get_student_mastery_for_topic(cursor, student_id, topic_id)
+            if avg_score is None:
+                status = 'not_started'
+            elif avg_score >= 70:
+                status = 'mastered'
+            else:
+                status = 'in_progress'
+            mastery_map[topic_id] = {
+                'avg_score': avg_score,
+                'status': status,
+                'topic_name': topic[2],
+                'grade_level': topic[3],
+                'prerequisites': topic[1] or ''
+            }
+        return mastery_map
+    except Exception as e:
+        print(f"[ERROR] get_topic_mastery_map: {e}")
+        return {}
 
 def check_prerequisites_met(cursor, student_id, topic_id):
     """Check if all prerequisites for a topic are mastered (>=70%)."""
-    cursor.execute("SELECT prerequisites FROM topics WHERE topic_id = %s", (topic_id,))
-    row = cursor.fetchone()
-    if not row or not row[0]:
+    try:
+        cursor.execute("SELECT prerequisites FROM topics WHERE topic_id = %s", (topic_id,))
+        row = cursor.fetchone()
+        if not row or not row[0]:
+            return True
+        prereq_ids = parse_prerequisites(row[0])
+        if not prereq_ids:
+            return True
+        for prereq_id in prereq_ids:
+            avg_score = get_student_mastery_for_topic(cursor, student_id, prereq_id)
+            if avg_score is None or avg_score < 70:
+                return False
         return True
-    prereq_ids = parse_prerequisites(row[0])
-    if not prereq_ids:
-        return True
-    for prereq_id in prereq_ids:
-        avg_score = get_student_mastery_for_topic(cursor, student_id, prereq_id)
-        if avg_score is None or avg_score < 70:
-            return False
-    return True
+    except Exception as e:
+        print(f"[ERROR] check_prerequisites_met: {e}")
+        return True  # Default to True if there's an error
 
+# ============================================================
+# ✅ FIXED: get_available_topics - Proper error handling
+# ============================================================
 @app.route('/api/student/<int:student_id>/available-topics', methods=['GET'])
 def get_available_topics(student_id):
     """Returns topics the student can access based on mastered prerequisites."""
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
-        cursor.execute("SELECT topic_id, topic_name, grade_level, prerequisites FROM topics")
+        
+        # First, get the student's grade level
+        cursor.execute("SELECT grade_level, id FROM students WHERE user_id = %s", (student_id,))
+        student_row = cursor.fetchone()
+        if not student_row:
+            cursor.close()
+            conn.close()
+            return jsonify({"error": "Student not found"}), 404
+        
+        student_grade = student_row[0]
+        student_pk = student_row[1]
+        print(f"[DEBUG] Student {student_id}: grade={student_grade}, pk={student_pk}")
+        
+        # Get topics for this student's grade level
+        cursor.execute(
+            "SELECT topic_id, topic_name, grade_level, prerequisites FROM topics WHERE grade_level = %s",
+            (student_grade,)
+        )
         topics = cursor.fetchall()
+        print(f"[DEBUG] Found {len(topics)} topics for grade {student_grade}")
         
         mastery_map = get_topic_mastery_map(cursor, student_id)
         
@@ -2996,7 +3027,10 @@ def get_available_topics(student_id):
         conn.close()
         return jsonify({"topics": available})
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        print(f"[ERROR] Error in /api/student/{student_id}/available-topics: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({"error": str(e), "topics": []}), 500
 
 @app.route('/api/student/<int:student_id>/mastery-status', methods=['GET'])
 def get_mastery_status(student_id):
@@ -3461,6 +3495,9 @@ def get_completed_quizzes(student_id):
         print(f"Error in /api/student/{student_id}/completed-quizzes: {e}")
         return jsonify({"completed_quizzes": {}}), 200
 
+# ============================================================
+# ✅ FIXED: get_student_materials - Direct join to student_materials
+# ============================================================
 @app.route('/api/student/materials', methods=['GET'])
 def get_student_materials():
     """Get approved materials assigned to a specific student."""
@@ -3478,28 +3515,36 @@ def get_student_materials():
         cursor = conn.cursor()
         delivery.ensure_student_materials_table(cursor)
 
+        # Get the student's PK (id) from the students table
+        cursor.execute("SELECT id FROM students WHERE user_id = %s", (student_id,))
+        student_row = cursor.fetchone()
+        if not student_row:
+            cursor.close()
+            conn.close()
+            return jsonify({"materials": []})
+        
+        actual_student_id = student_row[0]
+        print(f"[DEBUG] Fetching materials for student user_id={student_id}, student_pk={actual_student_id}")
+
+        # Get material columns
         extra_cols = delivery.existing_material_columns(cursor)
         select_cols = delivery.build_material_select('m', 't', include_topic_id=True)
         select_cols += [f'm.{c}' for c in extra_cols]
         select_sql = ', '.join(select_cols)
 
-        user_id = delivery.resolve_student_user_id(cursor, student_id)
-        if not user_id:
-            cursor.close()
-            conn.close()
-            return jsonify({"materials": []})
-
-        sm_join = delivery.student_materials_filter_by_user_sql('%s')
+        # ✅ FIXED: Direct SQL query with JOIN to student_materials
         cursor.execute(f"""
             SELECT {select_sql}
             FROM material m
             LEFT JOIN topics t ON m.topic_id = t.topic_id
-            {sm_join}
-            WHERE m.approval_status = 'Approved'
+            JOIN student_materials sm ON m.material_id = sm.material_id
+            WHERE sm.student_id = %s AND m.approval_status = 'Approved'
             ORDER BY m.generated_date DESC
-        """, (user_id,))
+        """, (actual_student_id,))
         
         materials = cursor.fetchall() or []
+        print(f"[DEBUG] Found {len(materials)} materials for student {student_id}")
+        
         materials_list = [
             delivery.material_row_to_dict(m, extra_cols, has_topic_id=True)
             for m in materials
@@ -3510,6 +3555,8 @@ def get_student_materials():
         return jsonify({"materials": materials_list})
     except Exception as e:
         print(f"Error in /api/student/materials: {e}")
+        import traceback
+        traceback.print_exc()
         return jsonify({"materials": []}), 500
 
 @app.route('/api/curriculum/index-status', methods=['GET'])
