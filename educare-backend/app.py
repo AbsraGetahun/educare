@@ -42,18 +42,24 @@ print(f"[DEBUG] BASE_URL: {os.getenv('BASE_URL')}")
 try:
     import faiss
     FAISS_AVAILABLE = True
-except ImportError:
+    print("[DEBUG] FAISS imported successfully")
+except ImportError as e:
     FAISS_AVAILABLE = False
+    print(f"[DEBUG] FAISS import failed: {e}")
 
 try:
     import pickle
-except ImportError:
+    print("[DEBUG] Pickle imported successfully")
+except ImportError as e:
     import pickle as pickle
+    print(f"[DEBUG] Pickle import failed: {e}")
 
 try:
     import numpy as np
-except ImportError:
+    print("[DEBUG] NumPy imported successfully")
+except ImportError as e:
     np = None
+    print(f"[DEBUG] NumPy import failed: {e}")
 
 # bcrypt for password hashing - define placeholder first, then import
 bcrypt = None
@@ -62,8 +68,9 @@ try:
     import bcrypt
     if bcrypt:
         BCRYPT_AVAILABLE = True
-except ImportError:
-    pass
+        print("[DEBUG] bcrypt imported successfully")
+except ImportError as e:
+    print(f"[DEBUG] bcrypt import failed: {e}")
 
 # Email service (real SMTP verification + OTP)
 try:
@@ -75,6 +82,7 @@ try:
         get_token_expiry,
     )
     EMAIL_AVAILABLE = True
+    print("[DEBUG] Email service imported successfully")
 except Exception as e:
     print(f"Warning: email_service not available: {e}")
     EMAIL_AVAILABLE = False
@@ -3433,28 +3441,85 @@ def search_curriculum():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
+# ==================== FAISS TEST WITH DETAILED DEBUG LOGGING ====================
 @app.route('/api/faiss/test', methods=['GET'])
 def faiss_test():
-    """Test endpoint that loads FAISS index and vectorizer."""
+    """Test endpoint that loads FAISS index and vectorizer with detailed debug logging."""
     try:
-        index_path = os.path.join('faiss_index', 'index.faiss')
-        vectorizer_path = os.path.join('faiss_index', 'vectorizer.pkl')
+        import os
+        import pickle
+        import sys
+        
+        # Get the current directory
+        current_dir = os.path.dirname(os.path.abspath(__file__))
+        index_path = os.path.join(current_dir, 'faiss_index', 'index.faiss')
+        vectorizer_path = os.path.join(current_dir, 'faiss_index', 'vectorizer.pkl')
+        
+        # Log everything
+        print(f"[DEBUG FAISS] ========================================")
+        print(f"[DEBUG FAISS] Python version: {sys.version}")
+        print(f"[DEBUG FAISS] Current directory: {current_dir}")
+        print(f"[DEBUG FAISS] Looking for index at: {index_path}")
+        print(f"[DEBUG FAISS] Looking for vectorizer at: {vectorizer_path}")
+        print(f"[DEBUG FAISS] Index exists: {os.path.exists(index_path)}")
+        print(f"[DEBUG FAISS] Vectorizer exists: {os.path.exists(vectorizer_path)}")
+        
+        # List directory contents
+        try:
+            print(f"[DEBUG FAISS] Directory contents of {current_dir}:")
+            for item in os.listdir(current_dir):
+                print(f"  - {item}")
+        except Exception as e:
+            print(f"[DEBUG FAISS] Error listing directory: {e}")
+        
+        # Check if faiss_index folder exists
+        faiss_dir = os.path.join(current_dir, 'faiss_index')
+        if os.path.exists(faiss_dir):
+            print(f"[DEBUG FAISS] faiss_index folder contents:")
+            for item in os.listdir(faiss_dir):
+                print(f"  - {item}")
+        else:
+            print(f"[DEBUG FAISS] faiss_index folder NOT found!")
+            
+        # Check faiss import
+        try:
+            import faiss
+            print(f"[DEBUG FAISS] FAISS imported successfully, version: {faiss.__version__}")
+        except ImportError as e:
+            print(f"[DEBUG FAISS] FAISS import failed: {e}")
+            return jsonify({"error": f"FAISS not installed: {e}"}), 500
 
         if not os.path.exists(index_path):
-            return jsonify({"error": "FAISS index file not found at faiss_index/index.faiss"}), 404
+            return jsonify({"error": f"FAISS index file not found at {index_path}"}), 404
         if not os.path.exists(vectorizer_path):
-            return jsonify({"error": "Vectorizer file not found at faiss_index/vectorizer.pkl"}), 404
+            return jsonify({"error": f"Vectorizer file not found at {vectorizer_path}"}), 404
 
+        print(f"[DEBUG FAISS] Loading FAISS index...")
         index = faiss.read_index(index_path)
+        print(f"[DEBUG FAISS] FAISS index loaded, size: {index.ntotal}")
+        
+        print(f"[DEBUG FAISS] Loading vectorizer...")
         with open(vectorizer_path, 'rb') as f:
             vectorizer = pickle.load(f)
+        print(f"[DEBUG FAISS] Vectorizer loaded successfully")
+        
+        print(f"[DEBUG FAISS] ========================================")
 
         return jsonify({
             "status": "FAISS loaded successfully",
-            "index_size": index.ntotal
+            "index_size": index.ntotal,
+            "index_path": index_path,
+            "vectorizer_path": vectorizer_path,
+            "current_directory": current_dir
         })
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        import traceback
+        print(f"[ERROR FAISS TEST] {e}")
+        traceback.print_exc()
+        return jsonify({
+            "error": str(e),
+            "traceback": traceback.format_exc()
+        }), 500
 
 # ==================== LOCAL RAG GENERATION ENDPOINT ====================
 
