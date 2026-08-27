@@ -150,27 +150,27 @@ def register_routes(app, get_db_connection):
         )
         row = cursor.fetchone()
         return int(row[0]) if row and row[0] is not None else None
-
-    def _generate_and_assign_for_student(
+def _generate_and_assign_for_student(
         cursor, topic_name, topic_id, grade_level, difficulty, teacher_id, user_id,
-        num_questions=7, skip_dedup=False,
+        num_questions=7, skip_dedup=True,  # ← CHANGE THIS TO True
     ):
         """Create one pending material for a student; returns material_id or None."""
         user_id = delivery.ensure_student_profile(cursor, user_id, grade_level)
         if not user_id:
             return None
-        if not skip_dedup and _dedup_recent(cursor, user_id, topic_name):
-            pending = delivery.find_pending_material_for_student_topic(
-                cursor, user_id, topic_name
-            )
-            if pending:
-                delivery.set_material_assignments(
-                    cursor, pending, [user_id], grade_level=grade_level
-                )
-                delivery.link_generation_history_to_material(
-                    cursor, pending, user_id, topic_name
-                )
-            return pending
+        # 🚫 Duplicate check disabled
+        # if not skip_dedup and _dedup_recent(cursor, user_id, topic_name):
+        #     pending = delivery.find_pending_material_for_student_topic(
+        #         cursor, user_id, topic_name
+        #     )
+        #     if pending:
+        #         delivery.set_material_assignments(
+        #             cursor, pending, [user_id], grade_level=grade_level
+        #         )
+        #         delivery.link_generation_history_to_material(
+        #             cursor, pending, user_id, topic_name
+        #         )
+        #     return pending
         html, cite, questions, _ = _generate_material_core(
             topic_name, grade_level, difficulty, num_questions=num_questions
         )
