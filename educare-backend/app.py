@@ -2152,8 +2152,8 @@ def approve_material(material_id):
         # ✅ DIRECT ASSIGNMENT: Link material to student
         if student_id:
             print(f"[DEBUG] Attempting to assign to student_id: {student_id}")
-            # student_id from frontend is users.user_id, need to get students.id (PK)
-            cursor.execute("SELECT id FROM students WHERE user_id = %s", (student_id,))
+            # student_id from frontend is users.user_id, need to get students.student_id (PK)
+            cursor.execute("SELECT student_id FROM students WHERE user_id = %s", (student_id,))
             student_row = cursor.fetchone()
             if student_row:
                 actual_student_id = student_row[0]
@@ -2184,11 +2184,11 @@ def approve_material(material_id):
                 "error": "No student selected. Please select a student before approving."
             }), 400
         
-        # ✅ FIXED: Use direct SQL query instead of delivery.get_assigned_students()
+        # ✅ FIXED: Use direct SQL query with student_id
         cursor.execute("""
             SELECT u.user_id, u.full_name
             FROM student_materials sm
-            JOIN students s ON sm.student_id = s.id
+            JOIN students s ON sm.student_id = s.student_id
             JOIN users u ON s.user_id = u.user_id
             WHERE sm.material_id = %s
         """, (material_id,))
@@ -2219,7 +2219,7 @@ def approve_material(material_id):
         cursor.execute("""
             SELECT u.user_id, u.full_name
             FROM student_materials sm
-            JOIN students s ON sm.student_id = s.id
+            JOIN students s ON sm.student_id = s.student_id
             JOIN users u ON s.user_id = u.user_id
             WHERE sm.material_id = %s
         """, (material_id,))
@@ -2240,7 +2240,6 @@ def approve_material(material_id):
         import traceback
         traceback.print_exc()
         return jsonify({"error": str(e)}), 500
-
 
 @app.route('/api/materials/reject/<int:material_id>', methods=['POST'])
 def reject_material(material_id):
