@@ -40,6 +40,8 @@ def register_routes(app, get_db_connection):
 
     def _dedup_recent(cursor, student_id, topic_name, days=7):
         """Check if material exists for this student+topic — ALWAYS RETURNS FALSE."""
+        # 🚫 DUPLICATE CHECK DISABLED - Allow generation anytime
+        return False
 
     def _insert_material(cursor, topic_id, title, content_html, cite, teacher_id=None):
         base_cols = ['topic_id', 'title', 'content', 'source_citation', 'approval_status']
@@ -150,45 +152,47 @@ def register_routes(app, get_db_connection):
         )
         row = cursor.fetchone()
         return int(row[0]) if row and row[0] is not None else None
-def _generate_and_assign_for_student(
-        cursor, topic_name, topic_id, grade_level, difficulty, teacher_id, user_id,
-        num_questions=7, skip_dedup=True,  # ← CHANGE THIS TO True
-    ):
-        """Create one pending material for a student; returns material_id or None."""
-        user_id = delivery.ensure_student_profile(cursor, user_id, grade_level)
-        if not user_id:
-            return None
-        # 🚫 Duplicate check disabled
-        # if not skip_dedup and _dedup_recent(cursor, user_id, topic_name):
-        #     pending = delivery.find_pending_material_for_student_topic(
-        #         cursor, user_id, topic_name
-        #     )
-        #     if pending:
-        #         delivery.set_material_assignments(
-        #             cursor, pending, [user_id], grade_level=grade_level
-        #         )
-        #         delivery.link_generation_history_to_material(
-        #             cursor, pending, user_id, topic_name
-        #         )
-        #     return pending
-        html, cite, questions, _ = _generate_material_core(
-            topic_name, grade_level, difficulty, num_questions=num_questions
-        )
-        material_id = _insert_material(
-            cursor, topic_id, f'Practice: {topic_name}', html, cite, teacher_id
-        )
-        if not delivery.set_material_assignments(
-            cursor, material_id, [user_id], grade_level=grade_level
+
+    def _generate_and_assign_for_student(
+            cursor, topic_name, topic_id, grade_level, difficulty, teacher_id, user_id,
+            num_questions=7, skip_dedup=True,
         ):
-            return None
-        _record_generation(
-            cursor, teacher_id, user_id, topic_name, grade_level, difficulty,
-            material_id=material_id,
-        )
-        delivery.link_generation_history_to_material(
-            cursor, material_id, user_id, topic_name
-        )
-        return material_id
+            """Create one pending material for a student; returns material_id or None."""
+            user_id = delivery.ensure_student_profile(cursor, user_id, grade_level)
+            if not user_id:
+                return None
+            # 🚫 Duplicate check disabled
+            # if not skip_dedup and _dedup_recent(cursor, user_id, topic_name):
+            #     pending = delivery.find_pending_material_for_student_topic(
+            #         cursor, user_id, topic_name
+            #     )
+            #     if pending:
+            #         delivery.set_material_assignments(
+            #             cursor, pending, [user_id], grade_level=grade_level
+            #         )
+            #         delivery.link_generation_history_to_material(
+            #             cursor, pending, user_id, topic_name
+            #         )
+            #     return pending
+            html, cite, questions, _ = _generate_material_core(
+                topic_name, grade_level, difficulty, num_questions=num_questions
+            )
+            material_id = _insert_material(
+                cursor, topic_id, f'Practice: {topic_name}', html, cite, teacher_id
+            )
+            if not delivery.set_material_assignments(
+                cursor, material_id, [user_id], grade_level=grade_level
+            ):
+                return None
+            _record_generation(
+                cursor, teacher_id, user_id, topic_name, grade_level, difficulty,
+                material_id=material_id,
+            )
+            delivery.link_generation_history_to_material(
+                cursor, material_id, user_id, topic_name
+            )
+            return material_id
+
     @app.route('/api/materials/generate-by-topic', methods=['POST'])
     def generate_material_by_topic():
         data = request.get_json() or {}
