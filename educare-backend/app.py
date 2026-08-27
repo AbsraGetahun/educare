@@ -3802,10 +3802,10 @@ def generate_practice_material():
         conn.commit()
         print(f"[DEBUG] Material inserted with ID: {material_id}")
 
-        # 4. Assign to student(s)
+                # 4. Assign to student(s)
         assigned_students = []
         if student_id and not for_all_students:
-            cursor.execute("SELECT id FROM students WHERE user_id = %s", (student_id,))
+            cursor.execute("SELECT student_id FROM students WHERE user_id = %s", (student_id,))
             student_row = cursor.fetchone()
             if student_row:
                 actual_student_id = student_row[0]
@@ -3816,10 +3816,12 @@ def generate_practice_material():
                 conn.commit()
                 assigned_students.append(student_id)
                 print(f"[DEBUG] Linked material to student: {actual_student_id}")
+            else:
+                print(f"[DEBUG] ❌ Student with user_id {student_id} not found in students table!")
 
         elif for_all_students and grade_level:
             cursor.execute("""
-                SELECT id, user_id FROM students WHERE grade_level = %s
+                SELECT student_id, user_id FROM students WHERE grade_level = %s
             """, (grade_level,))
             students = cursor.fetchall()
             for student in students:
