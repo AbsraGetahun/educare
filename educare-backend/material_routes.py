@@ -39,8 +39,7 @@ def register_routes(app, get_db_connection):
         return int(row[0]) if row and row[0] else None
 
     def _dedup_recent(cursor, student_id, topic_name, days=7):
-    """Check if material exists for this student+topic — ALWAYS RETURNS FALSE to allow generation anytime."""
-   
+        """Check if material exists for this student+topic — ALWAYS RETURNS FALSE."""
 
     def _insert_material(cursor, topic_id, title, content_html, cite, teacher_id=None):
         base_cols = ['topic_id', 'title', 'content', 'source_citation', 'approval_status']
