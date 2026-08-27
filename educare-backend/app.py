@@ -1611,7 +1611,7 @@ def family_register():
                 cursor.close()
                 conn.close()
                 return jsonify({"error": "student_id must be a number"}), 400
-            cursor.execute("SELECT id FROM students WHERE user_id = %s", (student_id,))
+            cursor.execute("SELECT student_id FROM students WHERE user_id = %s", (student_id,))
             row = cursor.fetchone()
             if not row:
                 cursor.close()
@@ -1627,7 +1627,7 @@ def family_register():
                 conn.close()
                 return jsonify({"error": "Student with this email not found"}), 400
             student_user_id = int(student[0])
-            cursor.execute("SELECT id FROM students WHERE user_id = %s", (student_user_id,))
+            cursor.execute("SELECT student_id FROM students WHERE user_id = %s", (student_user_id,))
             row = cursor.fetchone()
             if not row:
                 cursor.close()
