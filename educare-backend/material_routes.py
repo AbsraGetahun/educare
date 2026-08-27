@@ -189,7 +189,6 @@ def _generate_and_assign_for_student(
             cursor, material_id, user_id, topic_name
         )
         return material_id
-
     @app.route('/api/materials/generate-by-topic', methods=['POST'])
     def generate_material_by_topic():
         data = request.get_json() or {}
