@@ -1,0 +1,21 @@
+services:
+  - type: web
+    name: educare-api
+    env: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn app:app
+    envVars:
+      - key: DB_HOST
+        value: bqgznmvrhfku7qcdu5de-mysql.services.clever-cloud.com
+      - key: DB_USER
+        value: u0v9gqxe08e15ezo
+      - key: DB_PASSWORD
+        value: 4U7e9Bm5AMM3JDdryAFj
+      - key: DB_NAME
+        value: bqgznmvrhfku7qcdu5de
+      - key: JWT_SECRET_KEY
+        value: educare-secret-key
+      - key: EMAIL_MODE
+        value: console
+      - key: BASE_URL
+        value: https://educare-api.onrender.com
