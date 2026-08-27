@@ -3503,7 +3503,7 @@ def get_student_materials():
         delivery.ensure_student_materials_table(cursor)
 
         # Get the student's PK (id) from the students table
-        cursor.execute("SELECT id FROM students WHERE user_id = %s", (student_id,))
+        cursor.execute("SELECT student_id FROM students WHERE user_id = %s", (student_id,))
         student_row = cursor.fetchone()
         if not student_row:
             cursor.close()
