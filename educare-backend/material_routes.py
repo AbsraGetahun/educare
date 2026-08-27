@@ -39,31 +39,8 @@ def register_routes(app, get_db_connection):
         return int(row[0]) if row and row[0] else None
 
     def _dedup_recent(cursor, student_id, topic_name, days=7):
-        """True if pending or recently approved material exists for this student+topic."""
-        student_user_id = delivery.resolve_student_user_id(cursor, student_id)
-        if not student_user_id:
-            return False
-        if delivery.find_pending_material_for_student_topic(
-            cursor, student_user_id, topic_name
-        ):
-            return True
-        try:
-            cursor.execute(
-                """
-                SELECT 1
-                FROM generation_history gh
-                JOIN material m ON m.material_id = gh.material_id
-                WHERE gh.student_id = %s
-                  AND LOWER(gh.topic_name) = LOWER(%s)
-                  AND gh.generated_at >= DATE_SUB(NOW(), INTERVAL %s DAY)
-                  AND m.approval_status = 'Approved'
-                LIMIT 1
-                """,
-                (student_user_id, topic_name, days),
-            )
-            return cursor.fetchone() is not None
-        except Exception:
-            return False
+    """Check if material exists for this student+topic — ALWAYS RETURNS FALSE to allow generation anytime."""
+   
 
     def _insert_material(cursor, topic_id, title, content_html, cite, teacher_id=None):
         base_cols = ['topic_id', 'title', 'content', 'source_citation', 'approval_status']
