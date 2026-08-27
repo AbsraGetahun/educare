@@ -1654,11 +1654,11 @@ def family_register():
             (user_id, student_pk_id, relationship)
         )
         
-        # ✅ FIXED: Changed s.student_id to s.id
+        # ✅ FIXED: Use student_id instead of id in JOIN
         cursor.execute("""
             SELECT s.user_id, u.full_name, s.grade_level, s.section
             FROM family f
-            JOIN students s ON f.student_id = s.id
+            JOIN students s ON f.student_id = s.student_id
             JOIN users u ON s.user_id = u.user_id
             WHERE f.user_id = %s
         """, (user_id,))
@@ -1798,7 +1798,7 @@ def family_login():
         cursor.execute("""
             SELECT s.user_id, u.full_name, s.grade_level, s.section
             FROM family f
-            JOIN students s ON f.student_id = s.id
+            JOIN students s ON f.student_id = s.student_id
             JOIN users u ON s.user_id = u.user_id
             WHERE f.user_id = %s
         """, (user[0],))
@@ -1854,7 +1854,7 @@ def get_family_students():
         cursor.execute("""
             SELECT s.user_id, u.full_name, s.grade_level, s.section
             FROM family f
-            JOIN students s ON f.student_id = s.id
+            JOIN students s ON f.student_id = s.student_id
             JOIN users u ON s.user_id = u.user_id
             WHERE f.user_id = %s
         """, (user_id,))
@@ -3557,7 +3557,7 @@ def curriculum_index_status():
         return jsonify({"error": str(e)}), 500
 
 
-@app.route('/api/curriculum/search', methods=['GET', 'POST'])
+@app.route('/api/curriculum/search', methods(['GET', 'POST'])
 def search_curriculum():
     """Search curriculum using FAISS index and return full text results."""
     try:
@@ -3802,7 +3802,7 @@ def generate_practice_material():
         conn.commit()
         print(f"[DEBUG] Material inserted with ID: {material_id}")
 
-                # 4. Assign to student(s)
+        # 4. Assign to student(s)
         assigned_students = []
         if student_id and not for_all_students:
             cursor.execute("SELECT student_id FROM students WHERE user_id = %s", (student_id,))
