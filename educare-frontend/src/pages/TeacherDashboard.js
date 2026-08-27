@@ -343,35 +343,41 @@ function TeacherDashboard() {
     const material = pendingMaterials.find((m) => m.material_id === materialId);
     const hasAssignment = material?.assigned_students?.length > 0;
     
+    // If the material already has an assigned student, use that student
+    // If studentId was passed directly, use that
+    // If no assignment and no studentId, show error
     if (!hasAssignment && !studentId) {
-      alert('Please select which student this material is for, then click Approve.');
-      return;
+        alert('This material was not assigned to any student. Please regenerate it.');
+        return;
     }
     
+    // Use the assigned student's ID if available, otherwise use the provided studentId
+    const finalStudentId = hasAssignment ? material.assigned_students[0].user_id : studentId;
+    
     try {
-      console.log('📤 Calling approveMaterial API with:', { materialId, studentId });
-      const result = await approveMaterial(materialId, studentId);
-      console.log('✅ API Response:', result);
-      
-      if (result.error) {
-        alert(result.error);
-        return;
-      }
-      
-      setPendingMaterials(pendingMaterials.filter(m => m.material_id !== materialId));
-      const names = (result.assigned_students || []).map((s) => s.full_name).join(', ');
-      alert(names
-        ? `Material approved and sent to: ${names}`
-        : 'Material approved successfully!');
-      
-      const materialsData = await getPendingMaterials();
-      setPendingMaterials(materialsData.materials || []);
+        console.log('📤 Calling approveMaterial API with:', { materialId, studentId: finalStudentId });
+        const result = await approveMaterial(materialId, finalStudentId);
+        console.log('✅ API Response:', result);
+        
+        if (result.error) {
+            alert(result.error);
+            return;
+        }
+        
+        setPendingMaterials(pendingMaterials.filter(m => m.material_id !== materialId));
+        const names = (result.assigned_students || []).map((s) => s.full_name).join(', ');
+        alert(names
+            ? `Material approved and sent to: ${names}`
+            : 'Material approved successfully!');
+        
+        const materialsData = await getPendingMaterials();
+        setPendingMaterials(materialsData.materials || []);
     } catch (err) {
-      console.error('❌ Error approving material:', err);
-      const msg = err.response?.data?.error || 'Failed to approve material';
-      alert(msg);
+        console.error('❌ Error approving material:', err);
+        const msg = err.response?.data?.error || 'Failed to approve material';
+        alert(msg);
     }
-  };
+};
 
   const handleEditQuiz = async (quiz) => {
     setEditingQuiz(quiz);
