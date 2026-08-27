@@ -2986,7 +2986,7 @@ def get_available_topics(student_id):
         cursor = conn.cursor()
         
         # First, get the student's grade level
-        cursor.execute("SELECT grade_level, id FROM students WHERE user_id = %s", (student_id,))
+        cursor.execute("SELECT grade_level, student_id FROM students WHERE user_id = %s", (student_id,))
         student_row = cursor.fetchone()
         if not student_row:
             cursor.close()
