@@ -45,7 +45,7 @@ function TeacherDashboard() {
   const [topicGenPreview, setTopicGenPreview] = useState('');
   const [topicGenStatus, setTopicGenStatus] = useState('');
   const [topicGenLoading, setTopicGenLoading] = useState(false);
-  const [topicGenStep, setTopicGenStep] = useState(1); // 1=input, 2=preview, 3=done
+  const [topicGenStep, setTopicGenStep] = useState(1);
   const [topicGenStudentId, setTopicGenStudentId] = useState('');
   const [newQuiz, setNewQuiz] = useState({
     title: '',
@@ -71,7 +71,6 @@ function TeacherDashboard() {
     question_image: '',
   });
   const [newQuestionImageFile, setNewQuestionImageFile] = useState([]);
-  // AI Quiz Generation state
   const [showAIQuizModal, setShowAIQuizModal] = useState(false);
   const [aiQuizTopic, setAiQuizTopic] = useState('');
   const [aiQuizNumQ, setAiQuizNumQ] = useState(5);
@@ -81,21 +80,17 @@ function TeacherDashboard() {
   const [aiQuizResult, setAiQuizResult] = useState(null);
   const [aiQuizError, setAiQuizError] = useState('');
   const [topicSuggestionVisible, setTopicSuggestionVisible] = useState(false);
-  // Analytics state
   const [analyticsData, setAnalyticsData] = useState(null);
   const [analyticsLoading, setAnalyticsLoading] = useState(false);
-  // Batch generation state
   const [batchResult, setBatchResult] = useState(null);
   const [batchLoading, setBatchLoading] = useState(false);
   
-  // ✅ MOVED THESE UP HERE - BEFORE any state that uses them
   const navigate = useNavigate();
   const fullName = localStorage.getItem('full_name');
   const teacherUserId = localStorage.getItem('user_id');
   const assignedGrade = localStorage.getItem('assigned_grade') || '';
   const assignedGradeNum = assignedGrade ? parseInt(assignedGrade, 10) : null;
   
-  // Now these can safely use assignedGrade
   const [heatmapGradeFilter, setHeatmapGradeFilter] = useState(assignedGrade || 'all');
   const [heatmapSort, setHeatmapSort] = useState('mastery');
   const [topicGradeLevel, setTopicGradeLevel] = useState(assignedGrade || '10');
@@ -106,7 +101,6 @@ function TeacherDashboard() {
   const [batchDiff, setBatchDiff] = useState('medium');
   const [topicGenForAll, setTopicGenForAll] = useState(false);
 
-  // ── Topic autocomplete ────────────────────────────────────────
   const handleTopicInputChange = async (val, forMaterial = false) => {
     if (forMaterial) {
       setTopicInput(val);
@@ -138,7 +132,6 @@ function TeacherDashboard() {
     setAiQuizSuggestions([]);
   };
 
-  // ── AI Quiz Generation ────────────────────────────────────────
   const handleGenerateAIQuiz = async () => {
     if (!aiQuizTopic.trim()) return;
     setAiQuizLoading(true);
@@ -169,7 +162,6 @@ function TeacherDashboard() {
     }
   };
 
-  // ── Load analytics ────────────────────────────────────────────
   const loadAnalytics = async () => {
     setAnalyticsLoading(true);
     try {
@@ -187,7 +179,6 @@ function TeacherDashboard() {
     }
   };
 
-  // ── Batch Material Generation ─────────────────────────────────
   const handleBatchGenerate = async () => {
     if (!batchTopic.trim()) {
       alert('Enter a topic for batch generation.');
@@ -346,16 +337,12 @@ function TeacherDashboard() {
     });
   };
 
-  // ============================================================
-  // ✅ FIXED: handleApproveMaterial - Better error handling
-  // ============================================================
   const handleApproveMaterial = async (materialId, studentId = null) => {
     console.log('📝 handleApproveMaterial called with:', { materialId, studentId });
     
     const material = pendingMaterials.find((m) => m.material_id === materialId);
     const hasAssignment = material?.assigned_students?.length > 0;
     
-    // If no assignment and no studentId, show error
     if (!hasAssignment && !studentId) {
       alert('Please select which student this material is for, then click Approve.');
       return;
@@ -377,7 +364,6 @@ function TeacherDashboard() {
         ? `Material approved and sent to: ${names}`
         : 'Material approved successfully!');
       
-      // Refresh pending materials
       const materialsData = await getPendingMaterials();
       setPendingMaterials(materialsData.materials || []);
     } catch (err) {
@@ -500,7 +486,6 @@ function TeacherDashboard() {
       
       alert(`Material successfully generated for ${selectedStudent.full_name}!\n\nTitle: ${data.title}\nGrade: ${data.grade_level}\nDifficulty: ${data.difficulty}\n\nIt is now pending approval in the "Pending Approvals" tab.`);
       
-      // Refresh pending approvals
       const materialsData = await getPendingMaterials();
       setPendingMaterials(materialsData.materials || []);
       fetchData();
@@ -513,7 +498,6 @@ function TeacherDashboard() {
   };
 
   const handleGenerateBatchForStruggling = async (difficulty = 'medium') => {
-    // Collect struggling student-topic pairs
     const seen = new Set();
     const weakItems = [];
     masteryOverview.forEach(topic => {
@@ -561,7 +545,6 @@ function TeacherDashboard() {
       });
 
       try {
-        // Pass skipDedup = true so we bypass 7-day limits for batch gaps, ensuring we generate sheets cleanly.
         const res = await generatePracticeMaterial(
           item.topicName, item.studentId, difficulty, true, teacherUserId, assignedGradeNum
         );
@@ -589,7 +572,6 @@ function TeacherDashboard() {
       failed
     });
 
-    // Refresh pending approvals list
     const materialsData = await getPendingMaterials();
     setPendingMaterials(materialsData.materials || []);
     fetchData();
@@ -761,7 +743,6 @@ function TeacherDashboard() {
         </div>`
       );
       setTopicGenStep(3);
-      // Refresh pending materials list
       const materialsData = await getPendingMaterials();
       setPendingMaterials(materialsData.materials || []);
       fetchData();
@@ -1033,7 +1014,6 @@ function TeacherDashboard() {
               </button>
             </div>
 
-            {/* Material Approval Overview */}
             <div className="bg-white rounded-lg shadow-sm p-4 mb-4" style={{ backgroundColor: '#ffffff' }}>
               <h3 className="text-sm font-semibold mb-3 text-gray-700">Material Quality & Approval Summary</h3>
               {analyticsData ? (
@@ -1055,7 +1035,6 @@ function TeacherDashboard() {
               )}
             </div>
 
-            {/* Top Generated Topics */}
             <div className="bg-white rounded-lg shadow-sm p-4 mb-4" style={{ backgroundColor: '#ffffff' }}>
               <h3 className="text-sm font-semibold mb-3 text-gray-700">Most Generated Topics</h3>
               {analyticsData?.top_topics?.length > 0 ? (
@@ -1081,7 +1060,6 @@ function TeacherDashboard() {
               )}
             </div>
 
-            {/* Struggling Topics */}
             <div className="bg-white rounded-lg shadow-sm p-4 mb-4" style={{ backgroundColor: '#ffffff' }}>
               <h3 className="text-sm font-semibold mb-3 text-gray-700">Topics Students Struggle With Most</h3>
               {analyticsData?.struggling_topics?.length > 0 ? (
@@ -1117,7 +1095,6 @@ function TeacherDashboard() {
               )}
             </div>
 
-            {/* AI Quizzes summary */}
             <div className="bg-white rounded-lg shadow-sm p-4 mb-4" style={{ backgroundColor: '#ffffff' }}>
               <h3 className="text-sm font-semibold mb-2 text-gray-700">Platform Summary</h3>
               <div className="grid grid-cols-3 gap-3">
@@ -1142,7 +1119,6 @@ function TeacherDashboard() {
               </div>
             </div>
 
-            {/* Batch Generation */}
             <div className="bg-white rounded-lg shadow-sm p-4" style={{ backgroundColor: '#ffffff' }}>
               <h3 className="text-sm font-semibold mb-2 text-gray-700">Batch Material Generation</h3>
               <p className="text-xs text-gray-500 mb-3">
@@ -1266,7 +1242,6 @@ function TeacherDashboard() {
                 </div>
               </div>
 
-              {/* Add Question Section */}
               <div className="border rounded-lg p-3 mb-4" style={{ borderColor: '#e5e7eb' }}>
                 <h3 className="text-sm font-semibold mb-2">Add Question</h3>
                 <div className="mb-2">
@@ -1351,7 +1326,6 @@ function TeacherDashboard() {
                 </button>
               </div>
 
-              {/* Questions List */}
               {quizForm.questions.length > 0 && (
                 <div className="mb-4">
                   <h3 className="text-sm font-semibold mb-2">Questions ({quizForm.questions.length})</h3>
@@ -1633,7 +1607,6 @@ function TeacherDashboard() {
               <button onClick={handleCloseTopicGenerator} className="text-gray-500 hover:text-gray-700 text-lg leading-none">&times;</button>
             </div>
 
-            {/* Step 1: Topic Input */}
             {topicGenStep === 1 && (
               <div>
                 <p className="text-xs text-gray-500 mb-3">Type any math topic to search the curriculum and generate practice material.</p>
@@ -1749,7 +1722,6 @@ function TeacherDashboard() {
               </div>
             )}
 
-            {/* Step 2: Curriculum Preview */}
             {topicGenStep === 2 && topicGenStatus !== 'generated' && (
               <div>
                 <p className="text-sm text-gray-600 mb-2">
@@ -1792,7 +1764,6 @@ function TeacherDashboard() {
               </div>
             )}
 
-            {/* Step 3: Success */}
             {topicGenStep === 3 && topicGenStatus === 'generated' && (
               <div>
                 <MathContent html={topicGenPreview} className="mb-4" />
@@ -1806,7 +1777,7 @@ function TeacherDashboard() {
         </div>
       )}
 
-      {/* ── AI Quiz Generation Modal ─────────────────────────────── */}
+      {/* AI Quiz Generation Modal */}
       {showAIQuizModal && (
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
           <div className="bg-white rounded-lg shadow-xl w-full max-w-lg" style={{ backgroundColor: '#ffffff' }}>
@@ -1825,7 +1796,6 @@ function TeacherDashboard() {
                 AI generates a quiz from the curriculum via RAG search. All 6 textbooks are searched.
               </p>
 
-              {/* Topic with autocomplete */}
               <div className="relative">
                 <label className="block text-sm font-medium text-gray-700 mb-1">Topic</label>
                 <input
